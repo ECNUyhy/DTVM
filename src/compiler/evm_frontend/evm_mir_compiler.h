@@ -372,7 +372,25 @@ public:
   void handleReturnDataCopy(Operand DestOffsetComponents,
                             Operand OffsetComponents, Operand SizeComponents);
   Operand handleReturnDataSize();
+  void handleLog(Operand OffsetOp, Operand SizeOp, Operand Topic1,
+                 Operand Topic2, Operand Topic3, Operand Topic4,
+                 uint8_t NumTopics);
+  Operand handleCreate(Operand ValueOp, Operand OffsetOp, Operand SizeOp);
+  Operand handleCreate2(Operand ValueOp, Operand OffsetOp, Operand SizeOp,
+                        Operand SaltOp);
+  Operand handleCall(Operand GasOp, Operand ToAddrOp, Operand ValueOp,
+                     Operand ArgsOffsetOp, Operand ArgsSizeOp,
+                     Operand RetOffsetOp, Operand RetSizeOp);
+  Operand handleCallCode(Operand GasOp, Operand ToAddrOp, Operand ValueOp,
+                         Operand ArgsOffsetOp, Operand ArgsSizeOp,
+                         Operand RetOffsetOp, Operand RetSizeOp);
   void handleReturn(Operand MemOffsetComponents, Operand LengthComponents);
+  Operand handleDelegateCall(Operand GasOp, Operand ToAddrOp,
+                             Operand ArgsOffsetOp, Operand ArgsSizeOp,
+                             Operand RetOffsetOp, Operand RetSizeOp);
+  Operand handleStaticCall(Operand GasOp, Operand ToAddrOp,
+                           Operand ArgsOffsetOp, Operand ArgsSizeOp,
+                           Operand RetOffsetOp, Operand RetSizeOp);
   void handleInvalid();
   Operand handleKeccak256(Operand OffsetComponents, Operand LengthComponents);
   Operand handleSLoad(Operand KeyComponents);
@@ -518,6 +536,10 @@ private:
   Operand convertSingleInstrToU256Operand(MInstruction *SingleInstr);
   Operand convertU256InstrToU256Operand(MInstruction *U256Instr);
   Operand convertBytes32ToU256Operand(const Operand &Bytes32Op);
+
+  // Helper functions for operand conversion
+  template <size_t N>
+  U256Inst convertOperandToUNInstruction(const Operand &Param);
 
   CompilerContext &Ctx;
   MFunction *CurFunc = nullptr;
