@@ -20,6 +20,16 @@ X86CgLowering::X86CgLowering(CgFunction &MF)
 
 // ==================== Unary Expressions ====================
 
+CgRegister X86CgLowering::lowerNotExpr(MVT VT, CgRegister Operand) {
+  ZEN_ASSERT(VT.isInteger());
+  // Bitwise NOT via XOR with all-ones mask of the same width
+  uint64_t AllOnes = (VT == MVT::i8)    ? 0xFFull
+                     : (VT == MVT::i16) ? 0xFFFFull
+                     : (VT == MVT::i32) ? 0xFFFF'FFFFull
+                                        : 0xFFFF'FFFF'FFFF'FFFFull;
+  return fastEmit_ri_(VT, ISD::XOR, Operand, AllOnes, VT);
+}
+
 CgRegister X86CgLowering::lowerFPAbsExpr(MVT VT, CgRegister Operand) {
   const TargetRegisterClass *RC = TLI.getRegClassFor(VT);
 
@@ -889,6 +899,45 @@ CgRegister X86CgLowering::lowerCmpExpr(const CmpInstruction &Inst) {
     return Result8Reg;
   }
   return fastEmitInst_r(X86::MOVZX32rr8, &X86::GR32RegClass, Result8Reg);
+}
+
+CgRegister X86CgLowering::lowerAdcExpr(const AdcInstruction &Inst) {
+  // Use x86 flags with direct ADC without carry on operands
+  // We can be certain that CF will always be produced by the preceding add or
+  // by a chain of consecutive adc instructions, so CF injection can be omitted.
+  const MInstruction *LHS = Inst.getOperand<0>();
+  const MInstruction *RHS = Inst.getOperand<1>();
+
+  MVT VT = getMVT(*Inst.getType());
+  ZEN_ASSERT(VT.isInteger());
+  const TargetRegisterClass *RC = TLI.getRegClassFor(VT);
+
+  CgRegister LHSReg = lowerExpr(*LHS);
+  CgRegister RHSReg = lowerExpr(*RHS);
+
+  // Move LHS into destination and consume CF via ADC with RHS.
+  CgRegister SumReg = fastEmitCopy(RC, LHSReg);
+  switch (VT.SimpleTy) {
+  case MVT::i8:
+    MF->createCgInstruction(*CurBB, TII.get(X86::ADC8rr), SumReg, RHSReg,
+                            SumReg);
+    return SumReg;
+  case MVT::i16:
+    MF->createCgInstruction(*CurBB, TII.get(X86::ADC16rr), SumReg, RHSReg,
+                            SumReg);
+    return SumReg;
+  case MVT::i32:
+    MF->createCgInstruction(*CurBB, TII.get(X86::ADC32rr), SumReg, RHSReg,
+                            SumReg);
+    return SumReg;
+  case MVT::i64:
+    MF->createCgInstruction(*CurBB, TII.get(X86::ADC64rr), SumReg, RHSReg,
+                            SumReg);
+    return SumReg;
+  default:
+    // Should be unreachable: VT was validated in CF injection above.
+    throw getError(ErrorCode::NoMatchedInstruction);
+  }
 }
 
 CgRegister X86CgLowering::lowerSelectExpr(const SelectInstruction &Inst) {
