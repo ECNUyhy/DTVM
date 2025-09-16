@@ -10,6 +10,7 @@
 
 #include "evm/interpreter.h"
 #include "evmc/mocked_host.hpp"
+#include "runtime/evm_module.h"
 #include "utils/others.h"
 #include "zetaengine-c.h"
 #include "zetaengine.h"
@@ -184,10 +185,19 @@ TEST_P(EVMSampleTest, ExecuteSample) {
   BaseInterpreter Interpreter(Ctx);
 
   evmc_message Msg = {
-      .kind = EVMC_CREATE,
-      .flags = 0,
+      .kind = EVMC_CALL,
+      .flags = 0u,
       .depth = 0,
-      .gas = (long)GasLimit,
+      .gas = static_cast<int64_t>(GasLimit),
+      .recipient = {},
+      .sender = {},
+      .input_data = nullptr,
+      .input_size = 0,
+      .value = {},
+      .create2_salt = {},
+      .code_address = {},
+      .code = reinterpret_cast<const uint8_t *>(Mod->Code),
+      .code_size = Mod->CodeSize,
   };
   Ctx.allocFrame(&Msg);
 
