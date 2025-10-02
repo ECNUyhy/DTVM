@@ -9,6 +9,7 @@
 #include "compiler/mir/function.h"
 #include "compiler/mir/instructions.h"
 #include "compiler/mir/pointer.h"
+#include "evmc/instructions.h"
 #include "intx/intx.hpp"
 
 // Forward declaration to avoid circular dependency
@@ -72,9 +73,13 @@ public:
   const Byte *getBytecode() const { return Bytecode; }
   size_t getBytecodeSize() const { return BytecodeSize; }
 
+  void setGasMeteringEnabled(bool Enabled) { GasMeteringEnabled = Enabled; }
+  bool isGasMeteringEnabled() const { return GasMeteringEnabled; }
+
 private:
   const Byte *Bytecode = nullptr;
   size_t BytecodeSize = 0;
+  bool GasMeteringEnabled = false;
 };
 
 class EVMMirBuilder final {
@@ -159,6 +164,9 @@ public:
   void loadEVMInstanceAttr();
   void initEVM(CompilerContext *Context);
   void finalizeEVMBase();
+
+  void meterOpcode(evmc_opcode Opcode);
+  void meterGas(uint64_t GasCost);
 
   // Complete jump implementation with jump table
   void createJumpTable();
@@ -402,6 +410,16 @@ private:
         false, Type, *MConstantInt::get(Ctx, *Type, V));
   }
 
+  LoadInstruction *getInstanceElement(MType *ValueType, uint32_t Scale,
+                                      MInstruction *Index, int32_t Offset);
+
+  LoadInstruction *getInstanceElement(MType *ValueType, int32_t Offset) {
+    return getInstanceElement(ValueType, 1, nullptr, Offset);
+  }
+
+  StoreInstruction *setInstanceElement(MType *ValueType, MInstruction *Value,
+                                       int32_t Offset);
+
   // Create a full U256 operand from intx::uint256 value
   Operand createU256ConstOperand(const intx::uint256 &V);
 
@@ -540,6 +558,7 @@ private:
   MInstruction *InstanceAddr = nullptr;
   // exit when has exception
   MBasicBlock *ExceptionReturnBB = nullptr;
+  const evmc_instruction_metrics *InstructionMetrics = nullptr;
 
   // Program counter for current instruction
   uint64_t PC = 0;

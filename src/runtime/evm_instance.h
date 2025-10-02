@@ -12,6 +12,7 @@
 #include "intx/intx.hpp"
 #include "runtime/evm_module.h"
 #include "utils/backtrace.h"
+#include <limits>
 #include <unordered_map>
 #include <vector>
 
@@ -57,7 +58,7 @@ public:
   // ==================== Platform Feature Methods ====================
 
   uint64_t getGas() const { return Gas; }
-  void setGas(uint64_t NewGas) { Gas = NewGas; }
+  void setGas(uint64_t NewGas);
   static uint64_t calculateMemoryExpansionCost(uint64_t CurrentSize,
                                                uint64_t NewSize);
   void consumeMemoryExpansionGas(uint64_t RequiredSize);
@@ -74,12 +75,8 @@ public:
   // Note: These methods manage the call stack for JIT host interface functions
   // that need access to evmc_message context throughout the call hierarchy.
 
-  void pushMessage(evmc_message *Msg) { MessageStack.push_back(Msg); }
-  void popMessage() {
-    if (!MessageStack.empty()) {
-      MessageStack.pop_back();
-    }
-  }
+  void pushMessage(evmc_message *Msg);
+  void popMessage();
   evmc_message *getCurrentMessage() const {
     return MessageStack.empty() ? nullptr : MessageStack.back();
   }
@@ -114,6 +111,13 @@ public:
   }
   const std::vector<uint8_t> &getReturnData() const { return ReturnData; }
   void exit(int32_t exitCode) { InstanceExitCode = exitCode; }
+
+  static constexpr int32_t getGasFieldOffset() {
+    static_assert(offsetof(EVMInstance, Gas) <=
+                      std::numeric_limits<int32_t>::max(),
+                  "EVMInstance offsets should fit in 32-bit signed range");
+    return static_cast<int32_t>(offsetof(EVMInstance, Gas));
+  }
 
 private:
   EVMInstance(const EVMModule &M, Runtime &RT)
