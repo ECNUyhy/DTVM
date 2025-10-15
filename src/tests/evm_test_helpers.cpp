@@ -4,10 +4,13 @@
 #include "evm_test_helpers.h"
 #include "host/evm/crypto.h"
 #include "mpt/merkle_patricia_trie.h"
+#include "utils/others.h"
 
 #include <algorithm>
 #include <evmc/hex.hpp>
+#include <intx/intx.hpp>
 #include <iostream>
+#include <rapidjson/document.h>
 
 namespace zen::evm_test_utils {
 
@@ -52,18 +55,15 @@ calculateLogsHashImpl(const std::vector<evmc::MockedHost::log_record> &Logs) {
 }
 
 std::vector<uint8_t> uint256beToBytes(const evmc::uint256be &Value) {
-  const auto *Data = Value.bytes;
-  size_t Start = 0;
-
-  while (Start < sizeof(Value.bytes) && Data[Start] == 0) {
-    Start++;
-  }
-
-  if (Start == sizeof(Value.bytes)) {
+  intx::uint256 Val = intx::be::load<intx::uint256>(Value.bytes);
+  if (Val == 0) {
     return {};
   }
 
-  return std::vector<uint8_t>(Data + Start, Data + sizeof(Value.bytes));
+  unsigned NumBytes = intx::count_significant_bytes(Val);
+  std::vector<uint8_t> Result(32);
+  intx::be::unsafe::store(Result.data(), Val);
+  return std::vector<uint8_t>(Result.end() - NumBytes, Result.end());
 }
 
 std::vector<uint8_t> calculateStorageRoot(
@@ -71,14 +71,9 @@ std::vector<uint8_t> calculateStorageRoot(
   zen::evm::mpt::MerklePatriciaTrie StorageTrie;
 
   for (const auto &[Key, StorageValue] : Storage) {
-    bool IsEmpty = true;
-    for (int I = 0; I < 32; I++) {
-      if (StorageValue.current.bytes[I] != 0) {
-        IsEmpty = false;
-        break;
-      }
-    }
-    if (IsEmpty)
+    intx::uint256 Val =
+        intx::be::load<intx::uint256>(StorageValue.current.bytes);
+    if (Val == 0)
       continue;
 
     auto KeyHash = zen::host::evm::crypto::keccak256(
@@ -99,11 +94,11 @@ std::vector<uint8_t> encodeAccount(const evmc::MockedAccount &Account) {
   if (Account.nonce == 0) {
     AccountFields.push_back({});
   } else {
-    std::vector<uint8_t> NonceBytes;
-    int Nonce = Account.nonce;
-    while (Nonce > 0) {
-      NonceBytes.insert(NonceBytes.begin(), static_cast<uint8_t>(Nonce & 0xFF));
-      Nonce >>= 8;
+    uint64_t Nonce = Account.nonce;
+    unsigned NumBytes = (63 - __builtin_clzll(Nonce)) / 8 + 1;
+    std::vector<uint8_t> NonceBytes(NumBytes);
+    for (unsigned I = 0; I < NumBytes; ++I) {
+      NonceBytes[NumBytes - 1 - I] = static_cast<uint8_t>(Nonce >> (I * 8));
     }
     AccountFields.push_back(NonceBytes);
   }
@@ -166,6 +161,215 @@ bool verifyStateRoot(evmc::MockedHost &Host, const std::string &ExpectedHash) {
   }
 
   return CalculatedHash == ExpectedHash;
+}
+
+namespace {
+std::string formatBytes32Compact(const evmc::bytes32 &Value) {
+  intx::uint256 Val = intx::be::load<intx::uint256>(Value.bytes);
+  if (Val == 0) {
+    return "0x00";
+  }
+  return "0x" + intx::hex(Val);
+}
+} // namespace
+
+std::vector<std::string> verifyPostState(evmc::MockedHost &Host,
+                                         const rapidjson::Value &ExpectedState,
+                                         const std::string &TestName,
+                                         const std::string &Fork) {
+  std::vector<std::string> Errors;
+
+  if (!ExpectedState.IsObject()) {
+    Errors.push_back("Expected state is not an object for " + TestName + " (" +
+                     Fork + ")");
+    return Errors;
+  }
+
+  for (auto AccIt = ExpectedState.MemberBegin();
+       AccIt != ExpectedState.MemberEnd(); ++AccIt) {
+    std::string AddressStr = AccIt->name.GetString();
+    const rapidjson::Value &ExpectedAccount = AccIt->value;
+
+    evmc::address Addr{};
+    try {
+      auto Data = zen::utils::fromHex(AddressStr);
+      if (!Data || Data->size() != 20) {
+        Errors.push_back("Invalid address format: " + AddressStr + " in " +
+                         TestName + " (" + Fork + ")");
+        continue;
+      }
+      std::memcpy(Addr.bytes, Data->data(), 20);
+    } catch (const std::exception &E) {
+      Errors.push_back("Failed to parse address " + AddressStr + " in " +
+                       TestName + " (" + Fork + "): " + E.what());
+      continue;
+    }
+
+    auto AccIter = Host.accounts.find(Addr);
+    if (AccIter == Host.accounts.end()) {
+      Errors.push_back("Account " + AddressStr +
+                       " not found in actual state for " + TestName + " (" +
+                       Fork + ")");
+      continue;
+    }
+
+    const evmc::MockedAccount &ActualAccount = AccIter->second;
+
+    if (ExpectedAccount.HasMember("nonce") &&
+        ExpectedAccount["nonce"].IsString()) {
+      std::string NonceStr = ExpectedAccount["nonce"].GetString();
+      std::string Stripped = NonceStr;
+      if (NonceStr.size() >= 2 &&
+          (NonceStr.substr(0, 2) == "0x" || NonceStr.substr(0, 2) == "0X")) {
+        Stripped = NonceStr.substr(2);
+      }
+      int ExpectedNonce = static_cast<int>(
+          std::stoull(Stripped.empty() ? "0" : Stripped, nullptr, 16));
+
+      if (ActualAccount.nonce != ExpectedNonce) {
+        Errors.push_back(
+            "Nonce mismatch for account " + AddressStr +
+            "\n  Expected: " + std::to_string(ExpectedNonce) +
+            "\n  Actual:   " + std::to_string(ActualAccount.nonce));
+      }
+    }
+
+    if (ExpectedAccount.HasMember("balance") &&
+        ExpectedAccount["balance"].IsString()) {
+      std::string BalanceStr = ExpectedAccount["balance"].GetString();
+      try {
+        auto Data = zen::utils::fromHex(BalanceStr);
+        if (!Data) {
+          Errors.push_back("Invalid balance hex for account " + AddressStr +
+                           " in " + TestName + " (" + Fork + ")");
+        } else {
+          evmc::uint256be ExpectedBalance{};
+          size_t DataSize = std::min(Data->size(), size_t(32));
+          std::memcpy(ExpectedBalance.bytes + (32 - DataSize), Data->data(),
+                      DataSize);
+
+          intx::uint256 ExpectedVal =
+              intx::be::load<intx::uint256>(ExpectedBalance.bytes);
+          intx::uint256 ActualVal =
+              intx::be::load<intx::uint256>(ActualAccount.balance.bytes);
+
+          if (ExpectedVal != ActualVal) {
+            std::string ExpectedCompact = formatBytes32Compact(ExpectedBalance);
+            std::string ActualCompact =
+                formatBytes32Compact(ActualAccount.balance);
+            Errors.push_back("Balance mismatch for account " + AddressStr +
+                             "\n  Expected: " + ExpectedCompact +
+                             "\n  Actual:   " + ActualCompact);
+          }
+        }
+      } catch (const std::exception &E) {
+        Errors.push_back("Failed to parse balance for account " + AddressStr +
+                         " in " + TestName + " (" + Fork + "): " + E.what());
+      }
+    }
+
+    if (ExpectedAccount.HasMember("storage") &&
+        ExpectedAccount["storage"].IsObject()) {
+      const rapidjson::Value &ExpectedStorage = ExpectedAccount["storage"];
+
+      for (auto StorageIt = ExpectedStorage.MemberBegin();
+           StorageIt != ExpectedStorage.MemberEnd(); ++StorageIt) {
+        std::string KeyStr = StorageIt->name.GetString();
+        std::string ValueStr = StorageIt->value.GetString();
+
+        try {
+          auto KeyData = zen::utils::fromHex(KeyStr);
+          auto ValueData = zen::utils::fromHex(ValueStr);
+
+          if (!KeyData || KeyData->size() > 32) {
+            Errors.push_back("Invalid storage key format: " + KeyStr +
+                             " for account " + AddressStr + " in " + TestName +
+                             " (" + Fork + ")");
+            continue;
+          }
+
+          if (!ValueData || ValueData->size() > 32) {
+            Errors.push_back("Invalid storage value format: " + ValueStr +
+                             " for key " + KeyStr + " for account " +
+                             AddressStr + " in " + TestName + " (" + Fork +
+                             ")");
+            continue;
+          }
+
+          evmc::bytes32 Key{};
+          std::memcpy(Key.bytes + (32 - KeyData->size()), KeyData->data(),
+                      KeyData->size());
+
+          evmc::bytes32 ExpectedValue{};
+          std::memcpy(ExpectedValue.bytes + (32 - ValueData->size()),
+                      ValueData->data(), ValueData->size());
+
+          auto StorageIter = ActualAccount.storage.find(Key);
+          if (StorageIter == ActualAccount.storage.end()) {
+            evmc::bytes_view ExpectedValueView(ExpectedValue.bytes, 32);
+            Errors.push_back("Storage key " + KeyStr +
+                             " not found for account " + AddressStr + " in " +
+                             TestName + " (" + Fork + "), expected value: 0x" +
+                             evmc::hex(ExpectedValueView));
+            continue;
+          }
+
+          const evmc::bytes32 &ActualValue = StorageIter->second.current;
+
+          intx::uint256 ExpectedVal =
+              intx::be::load<intx::uint256>(ExpectedValue.bytes);
+          intx::uint256 ActualVal =
+              intx::be::load<intx::uint256>(ActualValue.bytes);
+
+          if (ExpectedVal != ActualVal) {
+            std::string ExpectedCompact = formatBytes32Compact(ExpectedValue);
+            std::string ActualCompact = formatBytes32Compact(ActualValue);
+            Errors.push_back("Storage mismatch for account " + AddressStr +
+                             ", key " + KeyStr +
+                             "\n  Expected: " + ExpectedCompact +
+                             "\n  Actual:   " + ActualCompact);
+          }
+        } catch (const std::exception &E) {
+          Errors.push_back("Failed to verify storage for key " + KeyStr +
+                           " for account " + AddressStr + " in " + TestName +
+                           " (" + Fork + "): " + E.what());
+        }
+      }
+    }
+
+    if (ExpectedAccount.HasMember("code") &&
+        ExpectedAccount["code"].IsString()) {
+      std::string CodeStr = ExpectedAccount["code"].GetString();
+      try {
+        auto ExpectedCodeData = zen::utils::fromHex(CodeStr);
+        if (!ExpectedCodeData) {
+          Errors.push_back("Invalid code hex for account " + AddressStr +
+                           " in " + TestName + " (" + Fork + ")");
+        } else {
+          if (ExpectedCodeData->size() != ActualAccount.code.size()) {
+            Errors.push_back(
+                "Code size mismatch for account " + AddressStr +
+                "\n  Expected: " + std::to_string(ExpectedCodeData->size()) +
+                " bytes" + "\n  Actual:   " +
+                std::to_string(ActualAccount.code.size()) + " bytes");
+          } else {
+            bool Match =
+                std::equal(ExpectedCodeData->begin(), ExpectedCodeData->end(),
+                           ActualAccount.code.begin());
+            if (!Match) {
+              Errors.push_back("Code content mismatch for account " +
+                               AddressStr);
+            }
+          }
+        }
+      } catch (const std::exception &E) {
+        Errors.push_back("Failed to parse code for account " + AddressStr +
+                         " in " + TestName + " (" + Fork + "): " + E.what());
+      }
+    }
+  }
+
+  return Errors;
 }
 
 } // namespace zen::evm_test_utils
