@@ -1,0 +1,9 @@
+// SDIV(-5, 2) = -2（负/正 → 负，向零截断）
+PUSH1 0x02                              // B = 2
+PUSH32 0xfffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffb  // A=-5
+SDIV
+PUSH1 0x00
+MSTORE
+PUSH1 0x20
+PUSH1 0x00
+RETURN
