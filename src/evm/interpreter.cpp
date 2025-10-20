@@ -519,7 +519,8 @@ void BaseInterpreter::interpret() {
     }
 
     case evmc_opcode::OP_INVALID: {
-      throw getError(ErrorCode::EVMInvalidInstruction);
+      Context.setStatus(EVMC_INVALID_INSTRUCTION);
+      break;
     }
 
     case evmc_opcode::OP_SELFDESTRUCT: {
@@ -573,7 +574,7 @@ void BaseInterpreter::interpret() {
             .execute();
         break;
       } else {
-        throw getError(ErrorCode::UnsupportedOpcode);
+        Context.setStatus(EVMC_INVALID_INSTRUCTION);
       }
     }
 
@@ -605,6 +606,17 @@ void BaseInterpreter::interpret() {
         Frame->Msg->gas = 0;
         Frame->GasRefund = 0;
         Context.setReturnData(std::vector<uint8_t>());
+        Context.freeBackFrame();
+        Frame = Context.getCurFrame();
+        if (!Frame) {
+          const auto &ReturnData = Context.getReturnData();
+          evmc::Result ExeResult(Context.getStatus(),
+                                 Frame ? Frame->Msg->gas : 0,
+                                 Frame ? Frame->GasRefund : 0,
+                                 ReturnData.data(), ReturnData.size());
+          Context.setExeResult(std::move(ExeResult));
+          return;
+        }
         break;
 
       case EVMC_FAILURE:
@@ -613,6 +625,17 @@ void BaseInterpreter::interpret() {
         Frame->Msg->gas = 0;
         Frame->GasRefund = 0;
         Context.setReturnData(std::vector<uint8_t>());
+        Context.freeBackFrame();
+        Frame = Context.getCurFrame();
+        if (!Frame) {
+          const auto &ReturnData = Context.getReturnData();
+          evmc::Result ExeResult(Context.getStatus(),
+                                 Frame ? Frame->Msg->gas : 0,
+                                 Frame ? Frame->GasRefund : 0,
+                                 ReturnData.data(), ReturnData.size());
+          Context.setExeResult(std::move(ExeResult));
+          return;
+        }
       }
 
       break;
