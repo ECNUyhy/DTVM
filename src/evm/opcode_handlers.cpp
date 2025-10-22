@@ -264,6 +264,7 @@ evmc_revision currentRevision() {
 void GasHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::uint256(Frame->Msg->gas));
 }
 
@@ -337,6 +338,7 @@ void SarHandler::doExecute() {
 void AddressHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::be::load<intx::uint256>(Frame->Msg->recipient));
 }
 
@@ -364,16 +366,19 @@ void BalanceHandler::doExecute() {
 void OriginHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::be::load<intx::uint256>(Frame->getTxContext().tx_origin));
 }
 void CallerHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::be::load<intx::uint256>(Frame->Msg->sender));
 }
 void CallValueHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::be::load<intx::uint256>(Frame->Msg->value));
 }
 void CallDataLoadHandler::doExecute() {
@@ -398,6 +403,7 @@ void CallDataLoadHandler::doExecute() {
 void CallDataSizeHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::uint256(Frame->Msg->input_size));
 }
 void CallDataCopyHandler::doExecute() {
@@ -445,6 +451,7 @@ void CodeSizeHandler::doExecute() {
   auto *Mod = Inst->getModule();
   size_t CodeSize = Mod->CodeSize;
 
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::uint256(CodeSize));
 }
 void CodeCopyHandler::doExecute() {
@@ -494,6 +501,7 @@ void CodeCopyHandler::doExecute() {
 void GasPriceHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(
       intx::be::load<intx::uint256>(Frame->getTxContext().tx_gas_price));
 }
@@ -516,6 +524,7 @@ void ExtCodeSizeHandler::doExecute() {
   }
 
   size_t CodeSize = Frame->Host->get_code_size(Addr);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::uint256(CodeSize));
 }
 void ExtCodeCopyHandler::doExecute() {
@@ -577,6 +586,7 @@ void ReturnDataSizeHandler::doExecute() {
   EVM_FRAME_CHECK(Frame);
   auto *Context = getContext();
   const auto &ReturnData = Context->getReturnData();
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(ReturnData.size());
 }
 void ReturnDataCopyHandler::doExecute() {
@@ -632,7 +642,7 @@ void ExtCodeHashHandler::doExecute() {
     }
     Frame->Msg->gas -= ADDITIONAL_COLD_ACCOUNT_ACCESS_COST;
   }
-
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::be::load<intx::uint256>(Frame->Host->get_code_hash(Addr)));
 }
 
@@ -654,39 +664,46 @@ void BlockHashHandler::doExecute() {
 void CoinBaseHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(
       intx::be::load<intx::uint256>(Frame->getTxContext().block_coinbase));
 }
 void TimeStampHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::uint256(Frame->getTxContext().block_timestamp));
 }
 void NumberHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::uint256(Frame->getTxContext().block_number));
 }
 void PrevRanDaoHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(
       intx::be::load<intx::uint256>(Frame->getTxContext().block_prev_randao));
 }
 void ChainIdHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::be::load<intx::uint256>(Frame->getTxContext().chain_id));
 }
 void SelfBalanceHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::be::load<intx::uint256>(
       Frame->Host->get_balance(Frame->Msg->recipient)));
 }
 void BaseFeeHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(
       intx::be::load<intx::uint256>(Frame->getTxContext().block_base_fee));
 }
@@ -703,11 +720,13 @@ void BlobHashHandler::doExecute() {
   }
 
   const auto &BlobHash = Frame->getTxContext().blob_hashes[Index];
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::be::load<intx::uint256>(BlobHash));
 }
 void BlobBaseFeeHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(
       intx::be::load<intx::uint256>(Frame->getTxContext().blob_base_fee));
 }
@@ -954,6 +973,7 @@ void MCopyHandler::doExecute() {
 void PCHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::uint256(Frame->Pc));
 }
 
@@ -962,12 +982,14 @@ void MSizeHandler::doExecute() {
   EVM_FRAME_CHECK(Frame);
   // Return the current memory size in bytes
   intx::uint256 MemSize = Frame->Memory.size();
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(MemSize);
 }
 
 void GasLimitHandler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(intx::uint256(Frame->getTxContext().block_gas_limit));
 }
 
@@ -1055,6 +1077,7 @@ void PushHandler::doExecute() {
   memset(ValueBytes, 0, sizeof(ValueBytes));
   std::memcpy(ValueBytes + (32 - NumBytes), Code + Frame->Pc + 1, NumBytes);
   intx::uint256 Val = intx::be::load<intx::uint256>(ValueBytes);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(Val);
   Frame->Pc += NumBytes;
 }
@@ -1062,6 +1085,7 @@ void PushHandler::doExecute() {
 void Push0Handler::doExecute() {
   auto *Frame = getFrame();
   EVM_FRAME_CHECK(Frame);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(0);
 }
 
@@ -1073,6 +1097,7 @@ void DupHandler::doExecute() {
   uint32_t N = OpcodeByte - static_cast<uint8_t>(evmc_opcode::OP_DUP1) + 1;
   EVM_SET_EXCEPTION_UNLESS(Frame->stackHeight() >= N, EVMC_STACK_UNDERFLOW);
   intx::uint256 V = Frame->peek(N - 1);
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(V);
 }
 
@@ -1111,6 +1136,7 @@ void CreateHandler::doExecute() {
       (OpCode == evmc_opcode::OP_CREATE2 ? Frame->pop() : intx::uint256(0));
 
   // Assume failure
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(0);
   Context->setReturnData(std::vector<uint8_t>());
 
@@ -1215,6 +1241,7 @@ void CallHandler::doExecute() {
   const auto OutputSize = Frame->pop();
 
   // Assume failure
+  EVM_REQUIRE_STACK_SPACE(Frame, 1);
   Frame->push(0);
   Context->setReturnData(std::vector<uint8_t>());
 
@@ -1314,7 +1341,8 @@ void CallHandler::doExecute() {
 
   if (!chargeGas(Frame, Cost)) {
     Context->setStatus(EVMC_OUT_OF_GAS);
-    Frame->push(0);
+    // Frame->push(0);// We have already pushed(0) when "assuming failure", so
+    // any subsequent failed branches should not push(0) again.
     return;
   }
 
