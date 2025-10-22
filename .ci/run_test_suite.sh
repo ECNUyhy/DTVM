@@ -125,22 +125,22 @@ for STACK_TYPE in ${STACK_TYPES[@]}; do
             cd ..
             ;;
         "evmrealsuite")
-            python3 tools/run_evm_tests.py -r build/dtvm $EXTRA_EXE_OPTIONS
-
             # simple IR output validation for multipass mode
             if [[ $RUN_MODE == "multipass" ]]; then
-                ./build/dtvm --format evm -m multipass tests/evm_asm/add.evm.hex --gas-limit 0xFFFFFFFFFFFF 2>&1 | tee tests/evm_asm/add_simple_dmir_output.ir
+                ./build/dtvm --format evm -m multipass tests/evm_asm/add_simple.evm.hex --gas-limit 0xFFFFFFFFFFFF 2>&1 | tee tests/evm_asm/add_simple_dmir_output.ir
                 # Check missing content
                 while IFS= read -r line; do
                     [ -n "$line" ] && ! grep -qF "$line" tests/evm_asm/add_simple_dmir_output.ir && echo "❌ Missing: $line" && exit 1
                 done < tests/evm_asm/add_simple.ir
                 echo "✅ DMIR validation passed"
 
-                ./build/dtvm --format evm -m multipass tests/evm_asm/add.evm.hex --gas-limit 0xFFFFFFFFFFFF --enable-evm-gas 2>&1 | tee tests/evm_asm/mir_gas_meter_dmir_output.ir
+                ./build/dtvm --format evm -m multipass tests/evm_asm/add_simple.evm.hex --gas-limit 0xFFFFFFFFFFFF --enable-evm-gas 2>&1 | tee tests/evm_asm/mir_gas_meter_dmir_output.ir
                 while IFS= read -r line; do
                     [ -n "$line" ] && ! grep -qF "$line" tests/evm_asm/mir_gas_meter_dmir_output.ir && echo "❌ Missing: $line" && exit 1
                 done < tests/evm_asm/mir_gas_meter.ir
                 echo "✅ MIR gas metering validation passed"
+            else
+                python3 tools/run_evm_tests.py -r build/dtvm $EXTRA_EXE_OPTIONS
             fi
             ;;
     esac
