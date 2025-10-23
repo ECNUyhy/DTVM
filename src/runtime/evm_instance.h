@@ -42,13 +42,33 @@ public:
 
   uint64_t getGas() const { return Gas; }
   void setGas(uint64_t NewGas);
+  void pushInitialGasLimit(uint64_t Limit) {
+    InitialGasLimitStack.push_back(Limit);
+  }
+  void popInitialGasLimit() {
+    if (!InitialGasLimitStack.empty())
+      InitialGasLimitStack.pop_back();
+  }
+  uint64_t getGasUsed() const {
+    if (InitialGasLimitStack.empty())
+      return 0;
+    uint64_t InitialLimit = InitialGasLimitStack.back();
+    // Use the saved gas value in the instance. This is updated just before
+    // frame destruction to capture the correct gas state.
+    uint64_t CurrentGas = Gas;
+    uint64_t GasUsed =
+        InitialLimit > CurrentGas ? InitialLimit - CurrentGas : 0;
+    return GasUsed;
+  }
   static uint64_t calculateMemoryExpansionCost(uint64_t CurrentSize,
                                                uint64_t NewSize);
   void consumeMemoryExpansionGas(uint64_t RequiredSize);
   void expandMemory(uint64_t RequiredSize);
   void chargeGas(uint64_t GasCost);
 
-  void addGasRefund(uint64_t amount) { GasRefund += amount; }
+  void addGasRefund(uint64_t Amount) { GasRefund += Amount; }
+  void setGasRefund(uint64_t Amount) { GasRefund = Amount; }
+  uint64_t getGasRefund() const { return GasRefund; }
 
   // ==================== Memory Methods ====================
   size_t getMemorySize() const { return Memory.size(); }
@@ -64,8 +84,8 @@ public:
     return MessageStack.empty() ? nullptr : MessageStack.back();
   }
   bool isStaticMode() const {
-    const evmc_message *msg = getCurrentMessage();
-    return msg && (msg->flags & EVMC_STATIC) != 0;
+    const evmc_message *Msg = getCurrentMessage();
+    return Msg && (Msg->flags & EVMC_STATIC) != 0;
   }
   evmc_revision getRevision() const { return Rev; }
 
@@ -149,6 +169,8 @@ private:
 
   uint64_t Gas = 0;
   uint64_t GasRefund = 0;
+  std::vector<uint64_t>
+      InitialGasLimitStack; // Stack to track initial gas for each frame
   // memory
   std::vector<uint8_t> Memory;
   std::vector<uint8_t> ReturnData;

@@ -6,6 +6,7 @@
 #include "evm_test_helpers.h"
 #include "evm_test_host.hpp"
 #include "host/evm/crypto.h"
+#include "runtime/evm_instance.h"
 #include "runtime/runtime.h"
 #include "utils/others.h"
 #include "zetaengine.h"
@@ -163,7 +164,7 @@ ExecutionResult executeStateTest(const StateTestFixture &Fixture,
     BaseInterpreter Interpreter(Ctx);
 
     evmc_message Msg = *PT.Message;
-    Ctx.allocFrame(&Msg);
+    Ctx.allocTopFrame(&Msg);
 
     // Set the host for the execution frame
     auto *Frame = Ctx.getCurFrame();
@@ -202,7 +203,7 @@ ExecutionResult executeStateTest(const StateTestFixture &Fixture,
 
     try {
       Interpreter.interpret();
-      ExecutionGasUsed = Ctx.getGasUsed();
+      ExecutionGasUsed = Inst->getGasUsed();
     } catch (const std::exception &E) {
       ExecutionSucceeded = false;
       ExecutionError = E.what();
@@ -250,8 +251,17 @@ ExecutionResult executeStateTest(const StateTestFixture &Fixture,
         PriorityFee = GasPrice > BaseFee ? GasPrice - BaseFee : 0;
       }
 
-      uint64_t TotalGasCost = ExecutionGasUsed * GasPrice;
-      uint64_t CoinBaseGas = ExecutionGasUsed * PriorityFee;
+      // Apply gas refund with EIP-3529 limit (London: max_refund = gas_used /
+      // 5)
+      uint64_t GasRefund = Inst->getGasRefund();
+      // For now, assume London or later (max_refund = gas_used / 5)
+      // TODO: get actual revision from the fork name
+      uint64_t RefundLimit = ExecutionGasUsed / 5;
+      uint64_t EffectiveRefund = std::min(GasRefund, RefundLimit);
+      uint64_t GasCharged = ExecutionGasUsed - EffectiveRefund;
+
+      uint64_t TotalGasCost = GasCharged * GasPrice;
+      uint64_t CoinBaseGas = GasCharged * PriorityFee;
 
       // Subtract gas cost from sender balance using intx arithmetic
       intx::uint256 SenderBalance =

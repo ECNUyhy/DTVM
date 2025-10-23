@@ -10,36 +10,8 @@
 using namespace zen;
 using namespace zen::evm;
 using namespace zen::runtime;
-using zen::common::ErrorCode;
-using zen::common::getError;
 
-EVMFrame *InterpreterExecContext::allocFrame(
-    evmc_message *ParentMsg, uint64_t GasLimit, evmc_call_kind Kind,
-    evmc::address Recipient, evmc::address Sender,
-    std::vector<uint8_t> CallData, intx::uint256 Value) {
-  EVM_REQUIRE(GasLimit >= BASIC_EXECUTION_COST, EVMOutOfGas);
-
-  FrameStack.emplace_back();
-
-  EVMFrame &Frame = FrameStack.back();
-
-  Frame.Msg = std::make_unique<evmc_message>();
-  Frame.Msg->kind = Kind;
-  Frame.Msg->flags = ParentMsg->flags;
-  Frame.Msg->depth = ParentMsg->depth + 1;
-  Frame.Msg->gas = GasLimit - BASIC_EXECUTION_COST;
-  Frame.Msg->value = intx::be::store<evmc::bytes32>(Value);
-  Frame.Msg->recipient = Recipient;
-  Frame.Msg->sender = Sender;
-  Frame.Msg->input_data = CallData.data();
-  Frame.Msg->input_size = CallData.size();
-
-  GasUsed = GasLimit;
-
-  return &Frame;
-}
-
-EVMFrame *InterpreterExecContext::allocFrame(evmc_message *Msg) {
+EVMFrame *InterpreterExecContext::allocTopFrame(evmc_message *Msg) {
   // Only deduct intrinsic gas (BASIC_EXECUTION_COST) for top-level transactions
   // (depth == 0) Nested calls (depth > 0) should not pay intrinsic gas
   const bool IsTopLevel = (Msg->depth == 0);
@@ -53,9 +25,15 @@ EVMFrame *InterpreterExecContext::allocFrame(evmc_message *Msg) {
 
   Frame.Msg = std::make_unique<evmc_message>(*Msg);
 
-  GasUsed = Frame.Msg->gas;
+  // Push the original message gas as the initial limit for this frame
+  // This is the gas available for execution (before intrinsic gas deduction)
+  Inst->pushInitialGasLimit(static_cast<uint64_t>(Frame.Msg->gas));
 
   Frame.Msg->gas = Frame.Msg->gas - IntrinsicGas;
+
+  // Push the message onto the instance's message stack so gas charging can
+  // access it
+  Inst->pushMessage(Frame.Msg.get());
 
   return &Frame;
 }
@@ -66,16 +44,23 @@ void InterpreterExecContext::freeBackFrame() {
   if (FrameStack.empty())
     return;
 
-  auto &BackFrame = FrameStack.back();
+  EVMFrame &Frame = FrameStack.back();
 
-  GasUsed = GasUsed - BackFrame.Msg->gas;
-  const auto Revision = Inst ? Inst->getRevision() : DEFAULT_REVISION;
-  const uint64_t RefundLimit = (Revision >= EVMC_LONDON)
-                                   ? (GasUsed / 5)
-                                   : (GasUsed / 2); // EIP-3529 update
-  uint64_t GasRefund = std::min(BackFrame.GasRefund, RefundLimit);
-  GasUsed = GasUsed - GasRefund;
+  // Save the gas value before frame destruction, so getGasUsed() can read it
+  // after all frames are destroyed and messages are popped.
+  Inst->setGas(static_cast<uint64_t>(Frame.Msg->gas));
 
+  // Gas management is entirely handled by EVMInstance.
+  // The instance uses a stack to track InitialGasLimit for each frame.
+  // Only pop for nested frames (depth > 0). Keep the main frame's gas limit
+  // on the stack so tests can read it after execution completes.
+  if (FrameStack.size() > 1) {
+    Inst->popInitialGasLimit();
+    // Pop message for nested frames to keep stack clean
+    Inst->popMessage();
+  }
+
+  // Destroy frame (and its message)
   FrameStack.pop_back();
 }
 
@@ -125,8 +110,8 @@ void BaseInterpreter::interpret() {
       if (!Frame) {
         const auto &ReturnData = Context.getReturnData();
         evmc::Result ExeResult(EVMC_SUCCESS, Frame ? Frame->Msg->gas : 0,
-                               Frame ? Frame->GasRefund : 0, ReturnData.data(),
-                               ReturnData.size());
+                               Context.getInstance()->getGasRefund(),
+                               ReturnData.data(), ReturnData.size());
         Context.setExeResult(std::move(ExeResult));
         return;
       }
@@ -497,7 +482,8 @@ void BaseInterpreter::interpret() {
       Frame = Context.getCurFrame();
       if (!Frame) {
         const auto &ReturnData = Context.getReturnData();
-        evmc::Result ExeResult(EVMC_SUCCESS, 0, Frame ? Frame->GasRefund : 0,
+        evmc::Result ExeResult(EVMC_SUCCESS, 0,
+                               Context.getInstance()->getGasRefund(),
                                ReturnData.data(), ReturnData.size());
         Context.setExeResult(std::move(ExeResult));
         return;
@@ -510,7 +496,8 @@ void BaseInterpreter::interpret() {
       Frame = Context.getCurFrame();
       if (!Frame) {
         const auto &ReturnData = Context.getReturnData();
-        evmc::Result ExeResult(EVMC_REVERT, 0, Frame ? Frame->GasRefund : 0,
+        evmc::Result ExeResult(EVMC_REVERT, 0,
+                               Context.getInstance()->getGasRefund(),
                                ReturnData.data(), ReturnData.size());
         Context.setExeResult(std::move(ExeResult));
         return;
@@ -528,7 +515,8 @@ void BaseInterpreter::interpret() {
       Frame = Context.getCurFrame();
       if (!Frame) {
         const auto &ReturnData = Context.getReturnData();
-        evmc::Result ExeResult(EVMC_SUCCESS, 0, Frame ? Frame->GasRefund : 0,
+        evmc::Result ExeResult(EVMC_SUCCESS, 0,
+                               Context.getInstance()->getGasRefund(),
                                ReturnData.data(), ReturnData.size());
         Context.setExeResult(std::move(ExeResult));
         return;
@@ -604,7 +592,7 @@ void BaseInterpreter::interpret() {
       case EVMC_INSUFFICIENT_BALANCE:
         // Fatal errors: consume all remaining gas and clear return data
         Frame->Msg->gas = 0;
-        Frame->GasRefund = 0;
+        Context.getInstance()->setGasRefund(0);
         Context.setReturnData(std::vector<uint8_t>());
         Context.freeBackFrame();
         Frame = Context.getCurFrame();
@@ -612,7 +600,7 @@ void BaseInterpreter::interpret() {
           const auto &ReturnData = Context.getReturnData();
           evmc::Result ExeResult(Context.getStatus(),
                                  Frame ? Frame->Msg->gas : 0,
-                                 Frame ? Frame->GasRefund : 0,
+                                 Context.getInstance()->getGasRefund(),
                                  ReturnData.data(), ReturnData.size());
           Context.setExeResult(std::move(ExeResult));
           return;
@@ -623,7 +611,7 @@ void BaseInterpreter::interpret() {
       default:
         // Generic failure: consume all remaining gas and clear return data
         Frame->Msg->gas = 0;
-        Frame->GasRefund = 0;
+        Context.getInstance()->setGasRefund(0);
         Context.setReturnData(std::vector<uint8_t>());
         Context.freeBackFrame();
         Frame = Context.getCurFrame();
@@ -631,7 +619,7 @@ void BaseInterpreter::interpret() {
           const auto &ReturnData = Context.getReturnData();
           evmc::Result ExeResult(Context.getStatus(),
                                  Frame ? Frame->Msg->gas : 0,
-                                 Frame ? Frame->GasRefund : 0,
+                                 Context.getInstance()->getGasRefund(),
                                  ReturnData.data(), ReturnData.size());
           Context.setExeResult(std::move(ExeResult));
           return;
@@ -645,7 +633,7 @@ void BaseInterpreter::interpret() {
   }
   const auto &ReturnData = Context.getReturnData();
   evmc::Result ExeResult(Context.getStatus(), Frame ? Frame->Msg->gas : 0,
-                         Frame ? Frame->GasRefund : 0, ReturnData.data(),
-                         ReturnData.size());
+                         Context.getInstance()->getGasRefund(),
+                         ReturnData.data(), ReturnData.size());
   Context.setExeResult(std::move(ExeResult));
 }

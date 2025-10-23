@@ -33,7 +33,6 @@ struct EVMFrame {
   evmc_tx_context MTx = {};
 
   size_t Sp = 0;
-  uint64_t GasRefund = 0;
   uint64_t Pc = 0;
   intx::uint256 Value = 0;
 
@@ -75,18 +74,13 @@ private:
   evmc_status_code Status = EVMC_SUCCESS;
   std::vector<uint8_t> ReturnData;
   evmc::Result ExeResult;
-  uint64_t GasUsed = 0;
 
 public:
   bool IsJump = false;
 
   InterpreterExecContext(runtime::EVMInstance *Inst) : Inst(Inst) {}
 
-  EVMFrame *allocFrame(evmc_message *ParentMsg, uint64_t GasLimit,
-                       evmc_call_kind Kind, evmc::address Recipient,
-                       evmc::address Sender, std::vector<uint8_t> CallData,
-                       intx::uint256 Value);
-  EVMFrame *allocFrame(evmc_message *Msg);
+  EVMFrame *allocTopFrame(evmc_message *Msg);
   void freeBackFrame();
 
   EVMFrame *getCurFrame() {
@@ -97,8 +91,6 @@ public:
   }
 
   runtime::EVMInstance *getInstance() { return Inst; }
-
-  uint64_t getGasUsed() const { return GasUsed; }
 
   void setCallData(const std::vector<uint8_t> &Data);
   void setTxContext(const evmc_tx_context &TxContext);
