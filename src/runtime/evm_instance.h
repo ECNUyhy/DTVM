@@ -10,6 +10,8 @@
 #include "evmc/evmc.hpp"
 #include "intx/intx.hpp"
 #include "runtime/evm_module.h"
+#include "runtime/instance.h"
+#include <array>
 #include <limits>
 
 // Forward declaration for evmc_message
@@ -34,6 +36,10 @@ class EVMInstance final : public RuntimeObject<EVMInstance> {
   friend class action::Instantiator;
 
 public:
+  static constexpr size_t HostArgScratchSlots = 8;
+  static constexpr size_t HostArgScratchSize =
+      HostArgScratchSlots * sizeof(intx::uint256);
+
   // ==================== Module Accessing Methods ====================
 
   const EVMModule *getModule() const { return Mod; }
@@ -125,6 +131,8 @@ public:
     ReturnData = std::move(Data);
   }
   const std::vector<uint8_t> &getReturnData() const { return ReturnData; }
+  void setExeResult(evmc::Result Result) { ExeResult = std::move(Result); }
+  const evmc::Result &getExeResult() const { return ExeResult; }
   void exit(int32_t ExitCode);
   int32_t getExitCode() const { return InstanceExitCode; }
 
@@ -135,25 +143,87 @@ public:
     return static_cast<int32_t>(offsetof(EVMInstance, Gas));
   }
 
+  static constexpr size_t getHostArgScratchSlotSize() {
+    return sizeof(intx::uint256);
+  }
+
+  static constexpr size_t getHostArgScratchCapacity() {
+    return HostArgScratchSize;
+  }
+
+  static constexpr int32_t getHostArgScratchOffset() {
+    static_assert(offsetof(EVMInstance, HostArgScratch) <=
+                      std::numeric_limits<int32_t>::max(),
+                  "EVMInstance offsets should fit in 32-bit signed range");
+    return static_cast<int32_t>(offsetof(EVMInstance, HostArgScratch));
+  }
+
 private:
   EVMInstance(const EVMModule &M, Runtime &RT)
       : RuntimeObject<EVMInstance>(RT), Mod(&M) {}
 
   virtual ~EVMInstance();
+  // // ========= Instance-compatible layout (do NOT change order) =========
+  Isolation *Iso = nullptr;
+  const Module *ModuleInst = nullptr;
+
+  uint32_t NumTotalGlobals = 0;
+  uint32_t NumTotalMemories = 0;
+  uint32_t NumTotalTables = 0;
+  uint32_t NumTotalFunctions = 0;
+
+  FunctionInstance *Functions = nullptr;
+  GlobalInstance *Globals = nullptr;
+  uint8_t *GlobalVarData = nullptr;
+  TableInstance *Tables = nullptr;
+  MemoryInstance *Memories = nullptr;
+
+#ifdef ZEN_ENABLE_JIT
+  uintptr_t *JITFuncPtrs = nullptr;
+  uint32_t *FuncTypeIdxs = nullptr;
+  uint64_t JITStackSize = 0;
+  uint8_t *JITStackBoundary = nullptr;
+#endif
+
+  common::Error Err = common::ErrorCode::NoError;
+
+  uint64_t Gas = 0;
+  int32_t InstanceExitCode = 0;
+
+#ifdef ZEN_ENABLE_BUILTIN_WASI
+  host::WASIContext *WASICtx = nullptr;
+#endif
+
+#ifdef ZEN_ENABLE_DUMP_CALL_STACK
+  int32_t *Traces;
+  uint32_t NumTraces = 0;
+  std::vector<std::pair<int32_t, uintptr_t>> HostFuncPtrs;
+#endif
+
+#ifdef ZEN_ENABLE_DWASM
+  uint32_t StackCost = 0;
+  int8_t InHostAPI = 0;
+#endif
+
+  void *CustomData = nullptr;
+  WasmMemoryDataType MemDataKind =
+      WasmMemoryDataType::WM_MEMORY_DATA_TYPE_MALLOC;
+  bool DataSegsInited = false;
+
+#ifdef ZEN_ENABLE_VIRTUAL_STACK
+  std::queue<utils::VirtualStackInfo *> VirtualStacks;
+#endif
+  // ========= EVM-specific fields start here =========
 
   static EVMInstanceUniquePtr
   newEVMInstance(Isolation &Iso, const EVMModule &Mod, uint64_t GasLimit = 0);
 
-  Isolation *Iso = nullptr;
   const EVMModule *Mod = nullptr;
-
-  Error Err = ErrorCode::NoError;
-
-  uint64_t Gas = 0;
   uint64_t GasRefund = 0;
   // memory
   std::vector<uint8_t> Memory;
   std::vector<uint8_t> ReturnData;
+  evmc::Result ExeResult;
 
   // Message stack for call hierarchy tracking
   std::vector<evmc_message *> MessageStack;
@@ -163,8 +233,8 @@ private:
   ExecutionCache InstanceExecutionCache;
 
   // exit code set by Instance.exit(ExitCode)
-  int32_t InstanceExitCode = 0;
   static constexpr size_t ALIGNMENT = 8;
+  alignas(16) std::array<uint8_t, HostArgScratchSize> HostArgScratch{};
 };
 
 } // namespace runtime
