@@ -7,14 +7,19 @@
 #include "evm/interpreter.h"
 #include "evmc/mocked_host.hpp"
 #include "host/evm/crypto.h"
-#include "host/evm/keccak/keccak.hpp"
 #include "mpt/rlp_encoding.h"
 #include "runtime/evm_instance.h"
 #include "runtime/isolation.h"
 #include "runtime/runtime.h"
 #include "utils/logging.h"
-#include "utils/others.h"
-#include <iostream>
+#include <algorithm>
+#include <atomic>
+#include <cstring>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 using namespace zen;
 using namespace zen::runtime;
@@ -25,15 +30,176 @@ namespace zen::evm {
 /// interpreters
 class ZenMockedEVMHost : public evmc::MockedHost {
 private:
+  struct IsolationDeleter {
+    Runtime *RT = nullptr;
+    void operator()(Isolation *Iso) const {
+      if (Iso && RT) {
+        RT->deleteManagedIsolation(Iso);
+      }
+    }
+  };
+  using IsolationPtr = std::unique_ptr<Isolation, IsolationDeleter>;
+
   Runtime *RT = nullptr;
-  Isolation *Iso = nullptr;
   std::vector<uint8_t> ReturnData;
   static inline std::atomic<uint64_t> ModuleCounter = 0;
 
 public:
-  ZenMockedEVMHost(Runtime *RT, Isolation *Iso) : RT(RT), Iso(Iso) {}
+  struct AccountInitEntry {
+    evmc::address Address{};
+    evmc::MockedAccount Account{};
+  };
+
+  struct TransactionExecutionConfig {
+    std::string ModuleName;
+    const uint8_t *Bytecode = nullptr;
+    size_t BytecodeSize = 0;
+    evmc_message Message{};
+    uint64_t GasLimit = 0;
+    uint64_t GasLimitMultiplier = 1;
+    std::optional<evmc::uint256be> MaxPriorityFeePerGas;
+  };
+
+  struct TransactionExecutionResult {
+    bool Success = false; // indicates host infrastructure success
+    uint64_t GasUsed = 0;
+    uint64_t GasCharged = 0;
+    uint64_t GasRefund = 0;
+    int64_t RemainingGas = 0;
+    evmc_status_code Status = EVMC_INTERNAL_ERROR;
+    std::string ErrorMessage;
+  };
+
+  ZenMockedEVMHost() = default;
+
+  void setRuntime(Runtime *NewRT) { RT = NewRT; }
+  Runtime *getRuntime() const { return RT; }
+
+  void loadInitialState(const evmc_tx_context &Context,
+                        const std::vector<AccountInitEntry> &Accounts,
+                        bool ClearExisting = true) {
+    tx_context = Context;
+    if (ClearExisting) {
+      accounts.clear();
+      recorded_logs.clear();
+    }
+    for (const auto &Entry : Accounts) {
+      accounts[Entry.Address] = Entry.Account;
+    }
+  }
+
+  TransactionExecutionResult
+  executeTransaction(const TransactionExecutionConfig &Config) {
+    TransactionExecutionResult Result;
+    if (!RT) {
+      Result.ErrorMessage = "Runtime is not attached to ZenMockedEVMHost";
+      return Result;
+    }
+    if (!Config.Bytecode || Config.BytecodeSize == 0) {
+      Result.ErrorMessage = "Bytecode buffer is empty";
+      return Result;
+    }
+
+    uint64_t GasLimit = Config.GasLimit;
+    if (GasLimit == 0) {
+      if (Config.Message.gas <= 0) {
+        Result.ErrorMessage = "Invalid gas provided in message";
+        return Result;
+      }
+      GasLimit = static_cast<uint64_t>(Config.Message.gas);
+    }
+    if (Config.GasLimitMultiplier > 1) {
+      if (GasLimit >
+          std::numeric_limits<uint64_t>::max() / Config.GasLimitMultiplier) {
+        Result.ErrorMessage = "Gas limit overflow detected";
+        return Result;
+      }
+      GasLimit *= Config.GasLimitMultiplier;
+    }
+
+    uint64_t Counter = ModuleCounter++;
+    std::string ModuleName = Config.ModuleName.empty()
+                                 ? ("tx_exec_mod_" + std::to_string(Counter))
+                                 : (Config.ModuleName + "_" +
+                                    std::to_string(Counter));
+
+    auto ModRet =
+        RT->loadEVMModule(ModuleName, Config.Bytecode, Config.BytecodeSize);
+    if (!ModRet) {
+      Result.ErrorMessage = "Failed to load EVM module: " + ModuleName;
+      return Result;
+    }
+    EVMModule *Mod = *ModRet;
+
+    IsolationPtr Iso(nullptr, IsolationDeleter{RT});
+    Iso.reset(RT->createManagedIsolation());
+    if (!Iso) {
+      Result.ErrorMessage = "Failed to create managed isolation";
+      return Result;
+    }
+
+    auto InstRet = Iso->createEVMInstance(*Mod, GasLimit);
+    if (!InstRet) {
+      Result.ErrorMessage = "Failed to create EVM instance for module " +
+                            ModuleName;
+      return Result;
+    }
+    EVMInstance *Inst = *InstRet;
+
+    evmc_message Msg = Config.Message;
+    uint64_t OriginalGas = static_cast<uint64_t>(Inst->getGas());
+
+    if (!applyPreExecutionState(Msg, Result)) {
+      return Result;
+    }
+
+    evmc::Result ExecResult{};
+    try {
+      RT->callEVMMain(*Inst, Msg, ExecResult);
+    } catch (const std::exception &E) {
+      Result.ErrorMessage = E.what();
+      Result.Success = false;
+      Result.Status = EVMC_INTERNAL_ERROR;
+      Result.RemainingGas = Inst->getGas();
+      ReturnData.clear();
+      return Result;
+    }
+
+    Result.Status = ExecResult.status_code;
+    Result.Success = true;
+    Result.RemainingGas = Inst->getGas();
+    if (ExecResult.output_data && ExecResult.output_size > 0) {
+      ReturnData.assign(ExecResult.output_data,
+                        ExecResult.output_data + ExecResult.output_size);
+    } else {
+      ReturnData.clear();
+    }
+
+    if (OriginalGas >= static_cast<uint64_t>(Result.RemainingGas)) {
+      Result.GasUsed =
+          OriginalGas - static_cast<uint64_t>(Result.RemainingGas);
+    }
+
+    uint64_t GasRefund =
+        static_cast<uint64_t>(std::max<int64_t>(0, Inst->getGasRefund()));
+    uint64_t RefundLimit = Result.GasUsed / 5;
+    Result.GasRefund = std::min(GasRefund, RefundLimit);
+    Result.GasCharged =
+        Result.GasUsed > Result.GasRefund ? Result.GasUsed - Result.GasRefund
+                                          : 0;
+
+    if (Result.GasCharged != 0) {
+      settleGasCharges(Result.GasCharged, Config, Msg, Result);
+    }
+
+    return Result;
+  }
 
   evmc::Result call(const evmc_message &Msg) noexcept override {
+    if (!RT) {
+      ZEN_LOG_ERROR("Runtime is not attached to ZenMockedEVMHost");
+      return evmc::MockedHost::call(Msg);
+    }
     if (Msg.kind == EVMC_CREATE || Msg.kind == EVMC_CREATE2) {
       return handleCreate(Msg);
     }
@@ -78,6 +244,14 @@ public:
 
       EVMModule *Mod = *ModRet;
 
+      IsolationPtr Iso(nullptr, IsolationDeleter{RT});
+      Iso.reset(RT->createManagedIsolation());
+      if (!Iso) {
+        ZEN_LOG_ERROR("Failed to create isolation for module: {}",
+                      ModName.c_str());
+        return ParentResult;
+      }
+
       // Create EVM instance
       auto InstRet = Iso->createEVMInstance(*Mod, Msg.gas);
       if (!InstRet) {
@@ -88,26 +262,25 @@ public:
 
       EVMInstance *Inst = *InstRet;
 
-      // Create interpreter context and execute
-      InterpreterExecContext Ctx(Inst);
-      BaseInterpreter Interpreter(Ctx);
-
       evmc_message CallMsg = Msg;
-      Ctx.allocTopFrame(&CallMsg);
+      evmc::Result ExecResult{};
 
-      // Set the host for the execution frame
-      auto *Frame = Ctx.getCurFrame();
-      Frame->Host = this;
+      try {
+        RT->callEVMMain(*Inst, CallMsg, ExecResult);
+      } catch (const std::exception &E) {
+        ZEN_LOG_ERROR("Error in recursive call: {}", E.what());
+        return ParentResult;
+      }
 
-      // Execute the interpreter
-      Interpreter.interpret();
-
-      // Calculate gas consumed and remaining
-      int64_t RemainingGas = Inst->getGas();
-      int64_t GasRefund = Ctx.getInstance()->getGasRefund();
-      ReturnData = Ctx.getReturnData();
-
-      return evmc::Result(Ctx.getStatus(), RemainingGas, GasRefund,
+      if (ExecResult.output_data && ExecResult.output_size > 0) {
+        ReturnData.assign(ExecResult.output_data,
+                          ExecResult.output_data + ExecResult.output_size);
+      } else {
+        ReturnData.clear();
+      }
+      int64_t RemainingGas = static_cast<int64_t>(Inst->getGas());
+      int64_t GasRefund = static_cast<int64_t>(Inst->getGasRefund());
+      return evmc::Result(ExecResult.status_code, RemainingGas, GasRefund,
                           ReturnData.empty() ? nullptr : ReturnData.data(),
                           ReturnData.size());
 
@@ -199,6 +372,10 @@ public:
   }
   evmc::Result handleCreate(const evmc_message &OrigMsg) noexcept {
     // 1 Calculate the contract address
+    if (!RT) {
+      ZEN_LOG_ERROR("Runtime is not attached to ZenMockedEVMHost");
+      return evmc::Result{EVMC_FAILURE, OrigMsg.gas, 0, evmc::address{}};
+    }
     evmc_message Msg = prepareMessage(OrigMsg);
     try {
       // 2 Check for address conflicts (if the address already exists and is not
@@ -223,7 +400,24 @@ public:
         return evmc::Result{EVMC_FAILURE, Msg.gas, 0, NewAddr};
       }
       EVMModule *Mod = *ModRet;
+
+      IsolationPtr Iso(nullptr, IsolationDeleter{RT});
+      Iso.reset(RT->createManagedIsolation());
+      if (!Iso) {
+        accounts.erase(NewAddr);
+        ZEN_LOG_ERROR("Failed to create isolation for module: {}",
+                      ModName.c_str());
+        return evmc::Result{EVMC_FAILURE, Msg.gas, 0, NewAddr};
+      }
+
       auto InstRet = Iso->createEVMInstance(*Mod, Msg.gas);
+      if (!InstRet) {
+        accounts.erase(NewAddr);
+        ZEN_LOG_ERROR("Failed to create EVM instance for module: {}",
+                      ModName.c_str());
+        return evmc::Result{EVMC_FAILURE, Msg.gas, 0, NewAddr};
+      }
+
       EVMInstance *Inst = *InstRet;
       // 3 Create new account status
       auto &NewAcc = accounts[NewAddr];
@@ -249,30 +443,40 @@ public:
       SenderAcc.balance = intx::be::store<evmc::bytes32>(SenderBalance);
       NewAcc.balance = intx::be::store<evmc::bytes32>(NewAccBalance);
 
-      // 5 Execute the contract creation code
-      InterpreterExecContext Ctx(Inst);
-      BaseInterpreter Interp(Ctx);
-
       evmc_message CallMsg = Msg;
-      Ctx.allocTopFrame(&CallMsg);
-      auto *Frame = Ctx.getCurFrame();
-      Frame->Host = this;
-      Interp.interpret();
+      evmc::Result ExecResult{};
+      try {
+        RT->callEVMMain(*Inst, CallMsg, ExecResult);
+      } catch (const std::exception &E) {
+        accounts.erase(NewAddr);
+        ZEN_LOG_ERROR("Error in handleCreate execution: {}", E.what());
+        return evmc::Result{EVMC_FAILURE, Msg.gas, 0, evmc::address{}};
+      }
 
-      // Calculate gas consumed and remaining
-      const int64_t RemainingGas = Inst->getGas();
-      const auto Status = Ctx.getStatus();
-      ReturnData = Ctx.getReturnData();
+      if (ExecResult.output_data && ExecResult.output_size > 0) {
+        ReturnData.assign(ExecResult.output_data,
+                          ExecResult.output_data + ExecResult.output_size);
+      } else {
+        ReturnData.clear();
+      }
+
+      const int64_t RemainingGas = static_cast<int64_t>(Inst->getGas());
+      const int64_t GasRefund =
+          static_cast<int64_t>(Inst->getGasRefund());
 
       // 6 Deploy the contract code (the output is the runtime code)
-      if (Status != EVMC_SUCCESS) {
+      if (ExecResult.status_code != EVMC_SUCCESS) {
         accounts.erase(NewAddr);
-        return evmc::Result{Status, RemainingGas, 0, NewAddr};
+        evmc::Result Failure(ExecResult.status_code, RemainingGas, GasRefund);
+        Failure.create_address = NewAddr;
+        return Failure;
       }
       if (!ReturnData.empty()) {
         if (ReturnData.size() > MAX_CODE_SIZE) {
           accounts.erase(NewAddr);
-          return evmc::Result{EVMC_FAILURE, RemainingGas, 0, NewAddr};
+          evmc::Result Failure(EVMC_FAILURE, RemainingGas, GasRefund);
+          Failure.create_address = NewAddr;
+          return Failure;
         }
         NewAcc.code = evmc::bytes(ReturnData.data(), ReturnData.size());
         const std::vector<uint8_t> CodeHashVec =
@@ -287,7 +491,7 @@ public:
         SenderAcc.nonce++;
       }
 
-      evmc::Result CreateResult(EVMC_SUCCESS, RemainingGas, 0,
+      evmc::Result CreateResult(EVMC_SUCCESS, RemainingGas, GasRefund,
                                 NewAcc.code.empty() ? nullptr
                                                     : NewAcc.code.data(),
                                 NewAcc.code.size());
@@ -297,6 +501,97 @@ public:
       ZEN_LOG_ERROR("Error in handleCreate: {}", E.what());
       return evmc::Result{EVMC_FAILURE, Msg.gas, 0, evmc::address{}};
     }
+  }
+
+private:
+  static intx::uint256 toUint256Bytes(const evmc::bytes32 &Value) {
+    return intx::be::load<intx::uint256>(Value);
+  }
+
+  static intx::uint256 toUint256BE(const evmc::uint256be &Value) {
+    return intx::be::load<intx::uint256>(Value);
+  }
+
+  static evmc::bytes32 toBytes32(const intx::uint256 &Value) {
+    return intx::be::store<evmc::bytes32>(Value);
+  }
+
+  void ensureAccountHasCodeHash(evmc::MockedAccount &Account) {
+    if (Account.code.empty() &&
+        std::memcmp(Account.codehash.bytes, EMPTY_CODE_HASH.bytes, 32) != 0) {
+      Account.codehash = EMPTY_CODE_HASH;
+    }
+  }
+
+  bool applyPreExecutionState(const evmc_message &Msg,
+                              TransactionExecutionResult &Result) {
+    auto &SenderAccount = accounts[Msg.sender];
+    ensureAccountHasCodeHash(SenderAccount);
+    SenderAccount.nonce++;
+
+    intx::uint256 TransferValue = toUint256BE(Msg.value);
+    if (TransferValue == 0) {
+      return true;
+    }
+
+    auto &RecipientAccount = accounts[Msg.recipient];
+    ensureAccountHasCodeHash(RecipientAccount);
+
+    intx::uint256 SenderBalance = toUint256Bytes(SenderAccount.balance);
+    intx::uint256 RecipientBalance = toUint256Bytes(RecipientAccount.balance);
+
+    if (SenderBalance < TransferValue) {
+      Result.Success = false;
+      Result.ErrorMessage = "Insufficient balance for value transfer";
+      return false;
+    }
+
+    SenderBalance -= TransferValue;
+    RecipientBalance += TransferValue;
+
+    SenderAccount.balance = toBytes32(SenderBalance);
+    RecipientAccount.balance = toBytes32(RecipientBalance);
+    return true;
+  }
+
+  void settleGasCharges(uint64_t GasCharged,
+                        const TransactionExecutionConfig &Config,
+                        const evmc_message &Msg,
+                        TransactionExecutionResult &Result) {
+    intx::uint256 GasPrice = toUint256BE(tx_context.tx_gas_price);
+    intx::uint256 BaseFee = toUint256BE(tx_context.block_base_fee);
+    intx::uint256 PriorityFee =
+        GasPrice > BaseFee ? GasPrice - BaseFee : intx::uint256{0};
+
+    if (Config.MaxPriorityFeePerGas) {
+      intx::uint256 MaxPriority =
+          toUint256BE(*Config.MaxPriorityFeePerGas);
+      intx::uint256 MaxFeeMinusBase =
+          GasPrice > BaseFee ? GasPrice - BaseFee : intx::uint256{0};
+      PriorityFee =
+          MaxPriority < MaxFeeMinusBase ? MaxPriority : MaxFeeMinusBase;
+    }
+
+    intx::uint256 GasCharged256 = intx::uint256(GasCharged);
+    intx::uint256 TotalGasCost = GasCharged256 * GasPrice;
+    intx::uint256 CoinbaseReward = GasCharged256 * PriorityFee;
+
+    auto &SenderAccount = accounts[Msg.sender];
+    ensureAccountHasCodeHash(SenderAccount);
+    intx::uint256 SenderBalance = toUint256Bytes(SenderAccount.balance);
+    if (SenderBalance < TotalGasCost) {
+      Result.Success = false;
+      Result.ErrorMessage = "Sender balance insufficient for gas settlement";
+      return;
+    }
+    SenderBalance -= TotalGasCost;
+    SenderAccount.balance = toBytes32(SenderBalance);
+
+    auto &CoinbaseAccount = accounts[tx_context.block_coinbase];
+    ensureAccountHasCodeHash(CoinbaseAccount);
+    intx::uint256 CoinbaseBalance = toUint256Bytes(CoinbaseAccount.balance);
+    CoinbaseBalance += CoinbaseReward;
+    CoinbaseAccount.balance = toBytes32(CoinbaseBalance);
   }
 };
 
