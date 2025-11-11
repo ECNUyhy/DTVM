@@ -65,6 +65,16 @@ private:
 
         Ip++;
 
+        bool IsDeadInstruction = InDeadCode && Opcode != OP_JUMPDEST;
+        if (IsDeadInstruction) {
+          if (Opcode >= OP_PUSH0 && Opcode <= OP_PUSH32) {
+            uint8_t NumBytes =
+                static_cast<uint8_t>(Opcode) - static_cast<uint8_t>(OP_PUSH0);
+            Ip += NumBytes;
+          }
+          continue;
+        }
+
         Builder.meterOpcode(Opcode);
 
         switch (Opcode) {
@@ -529,6 +539,7 @@ private:
         case OP_JUMP: {
           Operand Dest = pop();
           Builder.handleJump(Dest);
+          InDeadCode = true;
           break;
         }
 
@@ -540,6 +551,7 @@ private:
         }
 
         case OP_JUMPDEST: {
+          InDeadCode = false;
           Builder.handleJumpDest(PC);
           break;
         }
@@ -833,6 +845,7 @@ private:
   IRBuilder &Builder;
   CompilerContext *Ctx;
   EvalStack Stack;
+  bool InDeadCode = false;
   uint64_t PC = 0;
 };
 
