@@ -10,7 +10,6 @@
 
 #include <gtest/gtest.h>
 
-#include "evm/interpreter.h"
 #include "evm_test_helpers.h"
 #include "evm_test_host.hpp"
 #include "evmc/mocked_host.hpp"
@@ -43,10 +42,13 @@ bool hexEquals(const std::string &Hex1, const std::string &Hex2) {
 
 std::string computeFunctionSelector(const std::string &FunctionSig) {
   const std::vector<uint8_t> InputBytes(FunctionSig.begin(), FunctionSig.end());
+
   const std::vector<uint8_t> Hash = host::evm::crypto::keccak256(InputBytes);
+
   if (Hash.size() >= 4) {
     return utils::toHex(Hash.data(), 4);
   }
+
   return "";
 }
 
@@ -275,6 +277,7 @@ std::vector<SolidityContractTestData> getAllSolidityContractTests() {
 
   return Tests;
 }
+
 struct AbiEncoded {
   std::string StaticPart;
   std::string DynamicPart;
@@ -488,12 +491,21 @@ TEST_P(SolidityContractTest, ExecuteContractSequence) {
 
   RuntimeConfig Config;
   Config.Mode = common::RunMode::MultipassMode;
-  auto HostPtr = std::make_unique<ZenMockedEVMHost>();
-  auto RT = Runtime::newEVMRuntime(Config, HostPtr.get());
+  // Create temporary MockedHost first for Runtime creation
+  auto TempMockedHost = std::make_unique<evmc::MockedHost>();
+  auto RT = Runtime::newEVMRuntime(Config, TempMockedHost.get());
   ASSERT_TRUE(RT != nullptr) << "Failed to create runtime";
 
+  // Now create ZenMockedEVMHost and attach runtime for recursive calls
+  auto HostPtr = std::make_unique<ZenMockedEVMHost>();
   HostPtr->setRuntime(RT.get());
   ZenMockedEVMHost *MockedHost = HostPtr.get();
+
+  // Copy accounts and context from temporary host
+  MockedHost->accounts = TempMockedHost->accounts;
+  MockedHost->tx_context = TempMockedHost->tx_context;
+
+  RT->setEVMHost(MockedHost);
 
   // Switch to using ZenMockedEVMHost
   std::unique_ptr<evmc::Host> Host = std::move(HostPtr);
@@ -559,41 +571,30 @@ TEST_P(SolidityContractTest, ExecuteContractSequence) {
         << "Failed to create deploy instance for " << NowContractName;
 
     EVMInstance *DeployInst = *DeployInstRet;
-    InterpreterExecContext DeployCtx(DeployInst);
-    BaseInterpreter DeployInterpreter(DeployCtx);
 
     evmc::address NewContractAddr =
         MockedHost->computeCreateAddress(DeployerAddr, DeployerAccount.nonce);
 
-    evmc_message Msg = {
-        .kind = EVMC_CREATE,
-        .flags = 0u,
-        .depth = 0,
-        .gas = static_cast<int64_t>(GasLimit),
-        .recipient = NewContractAddr,
-        .sender = DeployerAddr,
-        .input_data = nullptr,
-        .input_size = 0,
-        .value = {},
-        .create2_salt = {},
-        .code_address = {},
-        .code = nullptr,
-        .code_size = 0,
-    };
-    DeployCtx.allocTopFrame(&Msg);
-    // Set the host for the execution frame
-    auto *Frame = DeployCtx.getCurFrame();
-    Frame->Host = MockedHost;
+    evmc_message Msg = {};
+    Msg.kind = EVMC_CREATE;
+    Msg.gas = static_cast<int64_t>(GasLimit);
+    Msg.recipient = NewContractAddr;
+    Msg.sender = DeployerAddr;
 
-    EXPECT_NO_THROW({ DeployInterpreter.interpret(); })
+    evmc::Result DeployResult;
+    ASSERT_NO_THROW({ RT->callEVMMain(*DeployInst, Msg, DeployResult); })
         << "Deploy failed for " << NowContractName;
-
-    const auto &DeployResult = DeployCtx.getReturnData();
-    ASSERT_FALSE(DeployResult.empty())
+    ASSERT_EQ(DeployResult.status_code, EVMC_SUCCESS)
+        << "Deploy failed with status: " << DeployResult.status_code;
+    ASSERT_GT(DeployResult.output_size, 0u)
         << "Deploy should return runtime code for " << NowContractName;
 
+    std::vector<uint8_t> DeployResultBytes(DeployResult.output_data,
+                                           DeployResult.output_data +
+                                               DeployResult.output_size);
+
     std::string DeployResultHex =
-        utils::toHex(DeployResult.data(), DeployResult.size());
+        utils::toHex(DeployResultBytes.data(), DeployResultBytes.size());
 
     if (Debug) {
       std::cout << "Deploy result hex: " << DeployResultHex << std::endl;
@@ -632,10 +633,10 @@ TEST_P(SolidityContractTest, ExecuteContractSequence) {
     auto &NewContractAccount = MockedHost->accounts[NewContractAddr];
     NewContractAccount.code =
         std::basic_string<uint8_t, evmc::byte_traits<uint8_t>>(
-            DeployResult.begin(), DeployResult.end());
+            DeployResultBytes.begin(), DeployResultBytes.end());
 
     const std::vector<uint8_t> CodeHashVec =
-        host::evm::crypto::keccak256(DeployResult);
+        host::evm::crypto::keccak256(DeployResultBytes);
     assert(CodeHashVec.size() == 32 && "Keccak256 hash must be 32 bytes");
     evmc::bytes32 CodeHash;
     std::memcpy(CodeHash.bytes, CodeHashVec.data(), 32);
@@ -664,40 +665,34 @@ TEST_P(SolidityContractTest, ExecuteContractSequence) {
 
     const auto &ContractInstance = InstanceIt->second;
 
-    InterpreterExecContext CallCtx(ContractInstance.Instance);
-
     ASSERT_FALSE(TestCase.Calldata.empty())
         << "Calldata must be provided for test: " << TestCase.Name;
 
     auto Calldata = utils::fromHex(TestCase.Calldata);
+    ASSERT_TRUE(Calldata) << "Failed to parse calldata for test: "
+                          << TestCase.Name;
+    std::vector<uint8_t> CalldataBytes = *Calldata;
 
-    evmc_message Msg = {
-        .kind = EVMC_CALL,
-        .flags = 0u,
-        .depth = 0,
-        .gas = static_cast<int64_t>(GasLimit),
-        .recipient = ContractInstance.Address,
-        .sender = DeployerAddr,
-        .input_data = Calldata->data(),
-        .input_size = Calldata->size(),
-        .value = {},
-        .create2_salt = {},
-        .code_address = {},
-        .code = reinterpret_cast<const uint8_t *>(
-            ContractInstance.Instance->getModule()->Code),
-        .code_size = ContractInstance.Instance->getModule()->CodeSize,
-    };
-    CallCtx.allocTopFrame(&Msg);
-    // Set the host for the execution frame
-    auto *Frame = CallCtx.getCurFrame();
-    Frame->Host = MockedHost;
+    evmc_message Msg = {};
+    Msg.kind = EVMC_CALL;
+    Msg.gas = static_cast<int64_t>(GasLimit);
+    Msg.recipient = ContractInstance.Address;
+    Msg.sender = DeployerAddr;
+    Msg.input_data = CalldataBytes.data();
+    Msg.input_size = CalldataBytes.size();
 
-    BaseInterpreter CallInterpreter(CallCtx);
-    EXPECT_NO_THROW({ CallInterpreter.interpret(); })
-        << "Function call failed: " << TestCase.Function;
+    evmc::Result CallResult;
+    ASSERT_NO_THROW({
+      RT->callEVMMain(*ContractInstance.Instance, Msg, CallResult);
+    }) << "Function call failed: "
+       << TestCase.Function;
+    ASSERT_EQ(CallResult.status_code, EVMC_SUCCESS)
+        << "Function call failed with status: " << CallResult.status_code;
 
-    const auto &CallResult = CallCtx.getReturnData();
-    std::string ResultHex = utils::toHex(CallResult.data(), CallResult.size());
+    std::string ResultHex;
+    if (CallResult.output_data && CallResult.output_size > 0) {
+      ResultHex = utils::toHex(CallResult.output_data, CallResult.output_size);
+    }
 
     if (Debug) {
       if (!TestCase.Function.empty()) {
