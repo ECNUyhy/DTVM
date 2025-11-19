@@ -165,7 +165,14 @@ public:
 
   void releaseOperand(Operand Opnd) {}
 
+  // Block for stack check instructions
+  void createStackCheckBlock();
+  void updateStackCheckBlock(int32_t MinSize, int32_t MaxSize);
+
   // ==================== Stack Instruction Handlers ====================
+
+  void stackPush(Operand PushValue);
+  Operand stackPop();
 
   // PUSH0: place value 0 on stack
   // PUSH1-PUSH32: Push N bytes onto stack
@@ -412,6 +419,8 @@ private:
   StoreInstruction *setInstanceElement(MType *ValueType, MInstruction *Value,
                                        int32_t Offset);
 
+  MInstruction *getInstanceStackTopInt(MInstruction *StackSize);
+
   // Create a full U256 operand from intx::uint256 value
   Operand createU256ConstOperand(const intx::uint256 &V);
 
@@ -564,6 +573,9 @@ private:
   // Jump table for dynamic jumps
   std::map<uint64_t, MBasicBlock *> JumpDestTable;
   MBasicBlock *DefaultJumpBB = nullptr; // For invalid jump destinations
+
+  // Stack check block for stack overflow/underflow checking
+  MBasicBlock *StackCheckBB = nullptr;
 
   // ==================== Interface Helper Methods ====================
 
