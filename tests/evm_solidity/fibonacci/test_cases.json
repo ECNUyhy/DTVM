@@ -1,9 +1,7 @@
 {
-  "skip": true,
   "main_contract": "TestFib",
   "deploy_contracts": [
-    "TestFib",
-    "FibonacciLib"
+    "TestFib"
   ],
   "test_cases": [
     {
