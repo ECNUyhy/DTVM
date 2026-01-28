@@ -64,7 +64,6 @@ DEFINE_CALCULATE_GAS(Sub, OP_SUB);
 DEFINE_CALCULATE_GAS(Mul, OP_MUL);
 DEFINE_CALCULATE_GAS(Div, OP_DIV);
 DEFINE_CALCULATE_GAS(Mod, OP_MOD);
-DEFINE_CALCULATE_GAS(Exp, OP_EXP);
 DEFINE_CALCULATE_GAS(SDiv, OP_SDIV);
 DEFINE_CALCULATE_GAS(SMod, OP_SMOD);
 
@@ -92,6 +91,7 @@ DEFINE_CALCULATE_GAS(Sgt, OP_SGT);
 DEFINE_NOT_TEMPLATE_CALCULATE_GAS(SignExtend, OP_SIGNEXTEND);
 DEFINE_NOT_TEMPLATE_CALCULATE_GAS(Byte, OP_BYTE);
 DEFINE_NOT_TEMPLATE_CALCULATE_GAS(Sar, OP_SAR);
+DEFINE_NOT_TEMPLATE_CALCULATE_GAS(Exp, OP_EXP);
 
 // Environmental information
 DEFINE_NOT_TEMPLATE_CALCULATE_GAS(Address, OP_ADDRESS);
@@ -297,15 +297,16 @@ void SignExtendHandler::doExecute() {
 
     // Extract the sign bit
     bool SignBit = (V & (intx::uint256(1) << SignBitPosition)) != 0;
+    // Generate mask: lower I*8 bits are 0, the rest are 1
+    intx::uint256 Mask = (intx::uint256(1) << SignBitPosition) - 1;
 
     if (SignBit) {
-      // Generate mask: lower I*8 bits are 0, the rest are 1
-      intx::uint256 Mask = (intx::uint256(1) << SignBitPosition) - 1;
       // Apply mask: extend the sign bit to higher bits
       Res |= ~Mask;
+    } else {
+      // Apply mask: extend the sign bit to higher bits
+      Res &= Mask;
     }
-    // If the sign bit is 0, no processing is needed, keep the original
-    // value unchanged
   }
   Frame->push(Res);
 }
@@ -344,10 +345,30 @@ void SarHandler::doExecute() {
     }
   } else {
     intx::uint256 IsNegative = (Value >> 255) & 1;
-    Res = IsNegative ? intx::uint256(-1) : intx::uint256(0);
+    Res = IsNegative ? ~intx::uint256(0) : intx::uint256(0);
   }
   Frame->push(Res);
 }
+
+void ExpHandler::doExecute() {
+  auto *Frame = getFrame();
+  auto *Context = getContext();
+  EVM_STACK_CHECK(Frame, 2);
+
+  auto &A = Frame->Stack[Frame->Sp - 1];
+  auto &B = Frame->Stack[Frame->Sp - 2];
+  uint64_t BytesNum = intx::count_significant_bytes(B);
+  uint64_t ByteGas = currentRevision() < EVMC_SPURIOUS_DRAGON
+                         ? EXP_BYTE_GAS_PRE_SPURIOUS_DRAGON
+                         : EXP_BYTE_GAS;
+  if (!chargeGas(Frame, BytesNum * ByteGas)) {
+    Context->setStatus(EVMC_OUT_OF_GAS);
+    return;
+  }
+  B = intx::exp(A, B);
+  --Frame->Sp;
+}
+
 // environmental information operations
 void AddressHandler::doExecute() {
   auto *Frame = getFrame();
@@ -1522,9 +1543,8 @@ void SelfDestructHandler::doExecute() {
   const auto Rev = currentRevision();
   // EIP-2929: charge cold account access cost if needed.
   if (Rev >= EVMC_BERLIN) {
-    const bool IsCold =
-        Frame->Host->access_account(Beneficiary) == EVMC_ACCESS_COLD;
-    if (IsCold && !chargeGas(Frame, COLD_ACCOUNT_ACCESS_COST)) {
+    if (Frame->Host->access_account(Beneficiary) == EVMC_ACCESS_COLD &&
+        !chargeGas(Frame, COLD_ACCOUNT_ACCESS_COST)) {
       Context->setStatus(EVMC_OUT_OF_GAS);
       return;
     }
@@ -1532,18 +1552,22 @@ void SelfDestructHandler::doExecute() {
 
   // EIP-161: if target account does not exist AND self has balance to transfer,
   // charge account creation cost.
-  if (Rev >= EVMC_SPURIOUS_DRAGON) {
-    evmc::bytes32 SelfBalance = Frame->Host->get_balance(Frame->Msg.recipient);
-    if (intx::be::load<intx::uint256>(SelfBalance) != 0 &&
-        !Frame->Host->account_exists(Beneficiary)) {
-      if (!chargeGas(Frame, ACCOUNT_CREATION_COST)) {
+  if (Rev >= EVMC_TANGERINE_WHISTLE) {
+    if (Rev == EVMC_TANGERINE_WHISTLE ||
+        Frame->Host->get_balance(Frame->Msg.recipient)) {
+      if (!Frame->Host->account_exists(Beneficiary) &&
+          !chargeGas(Frame, ACCOUNT_CREATION_COST)) {
         Context->setStatus(EVMC_OUT_OF_GAS);
         return;
       }
     }
   }
 
-  Frame->Host->selfdestruct(Frame->Msg.recipient, Beneficiary);
+  if (Frame->Host->selfdestruct(Frame->Msg.recipient, Beneficiary)) {
+    if (Rev < EVMC_LONDON) {
+      Context->getInstance()->addGasRefund(EXTRA_REFUND_BEFORE_LONDON);
+    }
+  }
 
   Context->setStatus(EVMC_SUCCESS);
   // Return remaining gas to parent frame before freeing current frame.

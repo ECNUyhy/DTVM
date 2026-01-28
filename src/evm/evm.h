@@ -10,7 +10,8 @@ using namespace evmc::literals;
 constexpr auto MAXSTACK = 1024;
 
 // Limit required memory size to prevent excessive memory consumption
-constexpr uint64_t MAX_REQUIRED_MEMORY_SIZE = 1024 * 1024;
+// Ethereum EVM uses UINT32_MAX for memory size, with gas-based limiting
+constexpr uint64_t MAX_REQUIRED_MEMORY_SIZE = 16 * 1024 * 1024; // 16MB
 
 constexpr evmc_revision DEFAULT_REVISION = EVMC_CANCUN;
 
@@ -22,8 +23,12 @@ constexpr auto ADDITIONAL_COLD_ACCOUNT_ACCESS_COST =
     COLD_ACCOUNT_ACCESS_COST - WARM_ACCOUNT_ACCESS_COST;
 constexpr auto CALL_VALUE_COST = 9000;
 constexpr auto ACCOUNT_CREATION_COST = 25000;
+constexpr auto EXTRA_REFUND_BEFORE_LONDON = 24000;
 constexpr auto CALL_GAS_STIPEND = 2300;
 constexpr uint64_t LegacyModExpBaseGas = 600;
+constexpr auto EXP_BYTE_GAS = 50;
+constexpr auto EXP_BYTE_GAS_PRE_SPURIOUS_DRAGON = 10;
+
 /// The limit of the size of created contract
 /// defined by [EIP-170](https://eips.ethereum.org/EIPS/eip-170)
 constexpr auto MAX_CODE_SIZE = 0x6000;

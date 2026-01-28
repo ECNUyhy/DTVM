@@ -686,7 +686,7 @@ static void evmEmitLogGeneric(zen::runtime::EVMInstance *Instance,
 
   for (size_t i = 0; i < MaxTopics; ++i) {
     if (TopicsData[i]) {
-      std::memcpy(Topics[ActualNumTopics].bytes, TopicsData[i], 32);
+      Topics[ActualNumTopics] = loadBytes32FromLE(TopicsData[i]);
       ActualNumTopics++;
     }
   }
@@ -870,9 +870,10 @@ static uint64_t evmHandleCallInternal(zen::runtime::EVMInstance *Instance,
     Instance->chargeGas(zen::evm::ADDITIONAL_COLD_ACCOUNT_ACCESS_COST);
   }
 
-  const bool TransfersValue =
-      (CallKind == EVMC_CALL || CallKind == EVMC_CALLCODE) && Value != 0;
-  if (TransfersValue && Instance->isStaticMode()) {
+  const bool HasValueArgs = CallKind == EVMC_CALL || CallKind == EVMC_CALLCODE;
+  const bool HasValue = Value != 0;
+
+  if (HasValueArgs && HasValue && Instance->isStaticMode()) {
     triggerStaticModeViolation(Instance);
     return 0;
   }
@@ -899,51 +900,51 @@ static uint64_t evmHandleCallInternal(zen::runtime::EVMInstance *Instance,
     }
   }
 
-  bool HasEnoughBalance = true;
-  if (TransfersValue) {
-    const auto CallerBalance = Module->Host->get_balance(CurrentMsg->recipient);
-    const intx::uint256 CallerValue =
-        intx::be::load<intx::uint256>(CallerBalance);
-    HasEnoughBalance = CallerValue >= intx::uint256(Value);
-    uint64_t ValueCost = zen::evm::CALL_VALUE_COST;
-    if (Instance->getGas() < ValueCost) {
-      zen::runtime::EVMInstance::triggerInstanceExceptionOnJIT(
-          Instance, zen::common::ErrorCode::GasLimitExceeded);
-    }
-    if (!HasEnoughBalance) {
-      ValueCost -= zen::evm::CALL_GAS_STIPEND;
-    }
-    const bool ChargeAccountCreation =
-        CallKind == EVMC_CALL && HasEnoughBalance &&
-        !Module->Host->account_exists(TargetAddr);
-    if (ChargeAccountCreation) {
-      ValueCost -= zen::evm::CALL_GAS_STIPEND;
-    }
-    Instance->chargeGas(ValueCost);
-    if (ChargeAccountCreation) {
-      Instance->chargeGas(zen::evm::ACCOUNT_CREATION_COST);
-    }
-  }
-
-  if (TransfersValue && !HasEnoughBalance) {
-    Instance->setReturnData({});
-    return 0;
-  }
-
-  uint8_t *MemoryBase = Instance->getMemoryBase();
   uint64_t CallGas = Gas;
+  if (HasValueArgs) {
+    std::optional<bool> AccountState;
+    uint64_t GasCost = HasValue ? zen::evm::CALL_VALUE_COST : 0;
+    if (CallKind == EVMC_CALL) {
+      if (HasValue || Instance->getRevision() < EVMC_SPURIOUS_DRAGON) {
+        AccountState = Module->Host->account_exists(TargetAddr);
+        if (!AccountState.value()) {
+          GasCost += zen::evm::ACCOUNT_CREATION_COST;
+        }
+      }
+    }
+
+    Instance->chargeGas(GasCost);
+  }
+
   uint64_t GasLeft = Instance->getGas();
   if (Rev >= EVMC_TANGERINE_WHISTLE) {
     const uint64_t GasCap = GasLeft - GasLeft / 64;
-    if (CallGas > GasCap) {
-      CallGas = GasCap;
-    }
+    CallGas = std::min(CallGas, GasCap);
   } else if (CallGas > GasLeft) {
-    Instance->chargeGas(GasLeft + 1);
+    zen::runtime::EVMInstance::triggerInstanceExceptionOnJIT(
+        Instance, zen::common::ErrorCode::GasLimitExceeded);
   }
-  if (TransfersValue) {
-    CallGas += zen::evm::CALL_GAS_STIPEND;
+
+  if (HasValueArgs) {
+    bool HasEnoughBalance = true;
+    if (HasValue) {
+      Instance->addGas(zen::evm::CALL_GAS_STIPEND);
+      CallGas += zen::evm::CALL_GAS_STIPEND;
+
+      const auto CallerBalance =
+          Module->Host->get_balance(CurrentMsg->recipient);
+      const intx::uint256 CallerValue =
+          intx::be::load<intx::uint256>(CallerBalance);
+      HasEnoughBalance = CallerValue >= intx::uint256(Value);
+
+      if (!HasEnoughBalance) {
+        Instance->setReturnData({});
+        return 0;
+      }
+    }
   }
+
+  uint8_t *MemoryBase = Instance->getMemoryBase();
 
   if (CurrentMsg->depth >= zen::evm::MAXSTACK) {
     Instance->setReturnData({});
@@ -984,16 +985,10 @@ static uint64_t evmHandleCallInternal(zen::runtime::EVMInstance *Instance,
     GasLeft = 0;
   }
   uint64_t GasUsed = CallGas > GasLeft ? CallGas - GasLeft : 0;
-  if (TransfersValue) {
-    GasUsed = GasUsed > zen::evm::CALL_GAS_STIPEND
-                  ? GasUsed - zen::evm::CALL_GAS_STIPEND
-                  : 0;
-  }
   if (GasUsed > 0) {
-    if (GasUsed > 0) {
-      Instance->chargeGas(GasUsed);
-    }
+    Instance->chargeGas(GasUsed);
   }
+
   if (Result.gas_refund > 0) {
     Instance->addGasRefund(Result.gas_refund);
   }
@@ -1187,8 +1182,6 @@ void evmSetSStore(zen::runtime::EVMInstance *Instance,
 
   const auto GasCost = GasCostCold + GasCostWarm;
   if ((uint64_t)GasCost > Instance->getGas()) {
-    // Roll back storage mutation on out-of-gas
-    Module->Host->set_storage(Msg->recipient, Key, PrevValue);
     zen::runtime::EVMInstance::triggerInstanceExceptionOnJIT(
         Instance, zen::common::ErrorCode::GasLimitExceeded);
   }
@@ -1235,14 +1228,6 @@ void evmHandleSelfDestruct(zen::runtime::EVMInstance *Instance,
 
   evmc::address BenefAddr = loadAddressFromLE(Beneficiary);
 
-  // EIP-161: charge account creation cost only if a new account is created.
-  if (Rev >= EVMC_SPURIOUS_DRAGON && !Module->Host->account_exists(BenefAddr)) {
-    const auto Balance = Module->Host->get_balance(Msg->recipient);
-    if (intx::be::load<intx::uint256>(Balance) != 0) {
-      Instance->chargeGas(zen::evm::ACCOUNT_CREATION_COST);
-    }
-  }
-
   // EIP-2929: charge cold account access cost if needed.
   if (Rev >= EVMC_BERLIN) {
     const bool IsCold =
@@ -1252,7 +1237,22 @@ void evmHandleSelfDestruct(zen::runtime::EVMInstance *Instance,
     }
   }
 
-  Module->Host->selfdestruct(Msg->recipient, BenefAddr);
+  // EIP-161: charge account creation cost only if a new account is created.
+  if (Rev >= EVMC_TANGERINE_WHISTLE) {
+    if (Rev == EVMC_TANGERINE_WHISTLE ||
+        Module->Host->get_balance(Msg->recipient)) {
+      if (!Module->Host->account_exists(BenefAddr)) {
+        Instance->chargeGas(zen::evm::ACCOUNT_CREATION_COST);
+      }
+    }
+  }
+
+  if (Module->Host->selfdestruct(Msg->recipient, BenefAddr)) {
+    if (Rev < EVMC_LONDON) {
+      Instance->addGasRefund(zen::evm::EXTRA_REFUND_BEFORE_LONDON);
+    }
+  }
+
   Instance->setReturnData({});
   uint64_t RemainingGas = Msg->gas;
   Instance->popMessage();
