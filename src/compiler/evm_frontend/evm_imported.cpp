@@ -885,14 +885,28 @@ static uint64_t evmHandleCallInternal(zen::runtime::EVMInstance *Instance,
   }
 
   uint64_t CallGas = Gas;
+  bool HasEnoughBalance = true;
+  if (HasValueArgs && HasValue) {
+    const auto CallerBalance = Module->Host->get_balance(CurrentMsg->recipient);
+    const intx::uint256 CallerValue =
+        intx::be::load<intx::uint256>(CallerBalance);
+    HasEnoughBalance = CallerValue >= intx::uint256(Value);
+  }
+
   if (HasValueArgs) {
     std::optional<bool> AccountState;
     uint64_t GasCost = HasValue ? zen::evm::CALL_VALUE_COST : 0;
+    if (HasValue && !HasEnoughBalance) {
+      GasCost -= zen::evm::CALL_GAS_STIPEND;
+    }
     if (CallKind == EVMC_CALL) {
       if (HasValue || Instance->getRevision() < EVMC_SPURIOUS_DRAGON) {
         AccountState = Module->Host->account_exists(TargetAddr);
         if (!AccountState.value()) {
           GasCost += zen::evm::ACCOUNT_CREATION_COST;
+          if (HasValue && HasEnoughBalance) {
+            GasCost -= zen::evm::CALL_GAS_STIPEND;
+          }
         }
       }
     }
@@ -909,23 +923,12 @@ static uint64_t evmHandleCallInternal(zen::runtime::EVMInstance *Instance,
         Instance, zen::common::ErrorCode::GasLimitExceeded);
   }
 
-  if (HasValueArgs) {
-    bool HasEnoughBalance = true;
-    if (HasValue) {
-      Instance->addGas(zen::evm::CALL_GAS_STIPEND);
-      CallGas += zen::evm::CALL_GAS_STIPEND;
-
-      const auto CallerBalance =
-          Module->Host->get_balance(CurrentMsg->recipient);
-      const intx::uint256 CallerValue =
-          intx::be::load<intx::uint256>(CallerBalance);
-      HasEnoughBalance = CallerValue >= intx::uint256(Value);
-
-      if (!HasEnoughBalance) {
-        Instance->setReturnData({});
-        return 0;
-      }
+  if (HasValueArgs && HasValue) {
+    if (!HasEnoughBalance) {
+      Instance->setReturnData({});
+      return 0;
     }
+    CallGas += zen::evm::CALL_GAS_STIPEND;
   }
 
   uint8_t *MemoryBase = Instance->getMemoryBase();
@@ -969,6 +972,11 @@ static uint64_t evmHandleCallInternal(zen::runtime::EVMInstance *Instance,
     GasLeft = 0;
   }
   uint64_t GasUsed = CallGas > GasLeft ? CallGas - GasLeft : 0;
+  if (HasValue) {
+    GasUsed = GasUsed > zen::evm::CALL_GAS_STIPEND
+                  ? GasUsed - zen::evm::CALL_GAS_STIPEND
+                  : 0;
+  }
   if (GasUsed > 0) {
     Instance->chargeGas(GasUsed);
   }
