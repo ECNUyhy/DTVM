@@ -490,14 +490,15 @@ public:
       if (Msg.kind == EVMC_CALL && !applyCallValueTransfer(Msg)) {
         return ParentResult;
       }
-      if (FeesPrepaidInTx && Msg.kind == EVMC_CALL &&
-          toUint256Bytes(Msg.value) != intx::uint256{0} &&
-          ParentResult.status_code == EVMC_SUCCESS) {
-        CallStipendRefund += CALL_GAS_STIPEND;
-      }
       if (ParentResult.status_code == EVMC_SUCCESS &&
           ParentResult.gas_left == 0) {
         ParentResult.gas_left = Msg.gas;
+      }
+      if (FeesPrepaidInTx && Msg.kind == EVMC_CALL &&
+          toUint256Bytes(Msg.value) != intx::uint256{0} &&
+          ParentResult.status_code == EVMC_SUCCESS &&
+          ParentResult.gas_left < Msg.gas) {
+        CallStipendRefund += CALL_GAS_STIPEND;
       }
       return ParentResult;
     }

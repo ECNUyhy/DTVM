@@ -1332,11 +1332,6 @@ void CallHandler::doExecute() {
 
   const bool TransfersValue = NeedValue && Value != 0;
   bool HasEnoughBalance = true;
-  if (TransfersValue) {
-    const auto CallerBalance = intx::be::load<intx::uint256>(
-        Frame->Host->get_balance(Frame->Msg.recipient));
-    HasEnoughBalance = CallerBalance >= Value;
-  }
 
   // Map opcode to evmc_call_kind
   evmc_call_kind CallKind;
@@ -1365,15 +1360,13 @@ void CallHandler::doExecute() {
 
   // Charge CALL_VALUE_COST only if actually transferring value (EIP-150)
   int64_t Cost = TransfersValue ? CALL_VALUE_COST : 0;
-  if (TransfersValue && !HasEnoughBalance) {
-    Cost -= CALL_GAS_STIPEND;
-  }
 
   if (OpCode == OP_CALL || OpCode == OP_CALLCODE) {
-    if (OpCode == OP_CALL && TransfersValue && HasEnoughBalance &&
-        !Frame->Host->account_exists(Dest)) {
-      Cost += ACCOUNT_CREATION_COST;
-      Cost -= CALL_GAS_STIPEND;
+    if (OpCode == OP_CALL &&
+        (TransfersValue || currentRevision() < EVMC_SPURIOUS_DRAGON)) {
+      if (!Frame->Host->account_exists(Dest)) {
+        Cost += ACCOUNT_CREATION_COST;
+      }
     }
   }
 
@@ -1433,6 +1426,10 @@ void CallHandler::doExecute() {
 
   if (TransfersValue) {
     NewMsg.gas += CALL_GAS_STIPEND;
+    Frame->Msg.gas += CALL_GAS_STIPEND;
+    const auto CallerBalance = intx::be::load<intx::uint256>(
+        Frame->Host->get_balance(Frame->Msg.recipient));
+    HasEnoughBalance = CallerBalance >= Value;
     if (!HasEnoughBalance) {
       Context->setStatus(EVMC_SUCCESS); // "Light" failure
       return;
@@ -1463,9 +1460,6 @@ void CallHandler::doExecute() {
     GasLeft = 0;
   }
   uint64_t GasUsed = CallGas > GasLeft ? CallGas - GasLeft : 0;
-  if (TransfersValue) {
-    GasUsed = GasUsed > CALL_GAS_STIPEND ? GasUsed - CALL_GAS_STIPEND : 0;
-  }
   chargeGas(Frame, GasUsed); // it's safe to charge gas here
 
   // Track subcall refund at Instance level
