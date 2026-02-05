@@ -59,9 +59,14 @@ public:
   void chargeGas(uint64_t GasCost);
   void addGas(uint64_t GasAmount);
 
-  void addGasRefund(uint64_t Amount) { GasRefund += Amount; }
-  void setGasRefund(uint64_t Amount) { GasRefund = Amount; }
-  uint64_t getGasRefund() const { return GasRefund; }
+  void addGasRefund(int64_t Amount) { GasRefund += Amount; }
+  void setGasRefund(int64_t Amount) { GasRefund = Amount; }
+  int64_t getGasRefund() const { return GasRefund; }
+  void restoreGasRefundSnapshot() {
+    if (!GasRefundStack.empty()) {
+      GasRefund = GasRefundStack.back();
+    }
+  }
   void setRevision(evmc_revision NewRev) { Rev = NewRev; }
 
   // ==================== Memory Methods ====================
@@ -283,7 +288,7 @@ private:
   newEVMInstance(Isolation &Iso, const EVMModule &Mod, uint64_t GasLimit = 0);
 
   const EVMModule *Mod = nullptr;
-  uint64_t GasRefund = 0;
+  int64_t GasRefund = 0;
   // memory
   uint8_t *MemoryBase = nullptr;
   uint64_t MemorySize = 0;
@@ -299,6 +304,7 @@ private:
   // Message stack for call hierarchy tracking
   evmc_message *CurrentMessage = nullptr;
   std::vector<evmc_message *> MessageStack;
+  std::vector<uint64_t> GasRefundStack;
   evmc_revision Rev = zen::evm::DEFAULT_REVISION;
 
   // Instance-level cache storage (shared across all messages in execution)

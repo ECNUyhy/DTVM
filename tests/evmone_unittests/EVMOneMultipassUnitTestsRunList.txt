@@ -3,6 +3,7 @@ multi_vm/evm.push_and_pop/external_vm
 multi_vm/evm.push_implicit_data/external_vm
 multi_vm/evm.stack_underflow/external_vm
 multi_vm/evm.add/external_vm
+multi_vm/evm.arith/external_vm
 multi_vm/evm.dup/external_vm
 multi_vm/evm.dup_all_1/external_vm
 multi_vm/evm.dup_stack_overflow/external_vm
@@ -22,6 +23,7 @@ multi_vm/evm.mod_by_zero/external_vm
 multi_vm/evm.addmod_mulmod_by_zero/external_vm
 multi_vm/evm.signextend/external_vm
 multi_vm/evm.signextend_31/external_vm
+multi_vm/evm.signextend_fuzzing/external_vm
 multi_vm/evm.exp_1_0/external_vm
 multi_vm/evm.exp_0_0/external_vm
 multi_vm/evm.calldataload/external_vm
@@ -128,6 +130,7 @@ multi_vm/evm.sstore_out_of_block_gas/external_vm
 multi_vm/evm.sstore_cost/external_vm
 multi_vm/evm.sstore_cost_legacy/external_vm
 multi_vm/evm.sstore_cost_net_gas_metering/external_vm
+multi_vm/evm.sstore_below_stipend/external_vm
 multi_vm/evm.evmone_loaded_program_relocation/external_vm
 multi_vm/evm.jumpdest_with_high_offset/external_vm
 multi_vm/evm.grow_memory_with_mload/external_vm
@@ -159,7 +162,9 @@ multi_vm/evm.blobhash_invalid_hash_version/external_vm
 multi_vm/evm.blobhash_one/external_vm
 multi_vm/evm.blobhash_two/external_vm
 multi_vm/evm.callf_undefined/external_vm
-multi_vm/evm.clz_pre_osaka/external_vm
+multi_vm/evm.clz_gas/external_vm
+multi_vm/evm.clz_osaka/external_vm
+multi_vm/evm.clz_stack_underflow/external_vm
 multi_vm/evm.dupn_undefined/external_vm
 multi_vm/evm.eofcreate_undefined/external_vm
 multi_vm/evm.evmone_block_max_stack_growth_overflow/external_vm
@@ -182,6 +187,7 @@ multi_vm/evm.swapn_undefined/external_vm
 multi_vm/evm.undefined/external_vm
 multi_vm/evm.undefined_instruction_analysis_overflow/external_vm
 multi_vm/evm.undefined_instruction_block_cost_negative/external_vm
+multi_vm/evm.undefined_instructions/external_vm
 multi_vm/evm.call_oog_after_depth_check/external_vm
 multi_vm/evm.delegatecall_oog_depth_limit/external_vm
 multi_vm/evm.call_failing_with_value/external_vm

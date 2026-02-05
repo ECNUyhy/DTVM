@@ -83,11 +83,11 @@ public:
   newEVMRuntime(RuntimeConfig Config = {},
                 evmc::Host *EVMHost = nullptr) noexcept {
     auto RT = newRuntime(Config);
-
-    // SinglepassMode is not supported for EVMRuntime
-    ZEN_ASSERT(Config.Mode != RunMode::SinglepassMode);
-
-    RT->EVMHost = EVMHost;
+    if (RT) {
+      // SinglepassMode is not supported for EVMRuntime
+      ZEN_ASSERT(Config.Mode != RunMode::SinglepassMode);
+      RT->EVMHost = EVMHost;
+    }
 
     return RT;
   }
@@ -158,7 +158,8 @@ public:
 #ifdef ZEN_ENABLE_EVM
   /// \warning not thread-safe
   common::MayBe<EVMModule *>
-  loadEVMModule(const std::string &Filename) noexcept;
+  loadEVMModule(const std::string &Filename,
+                evmc_revision Rev = zen::evm::DEFAULT_REVISION) noexcept;
 
   /// \warning not thread-safe
   common::MayBe<EVMModule *>

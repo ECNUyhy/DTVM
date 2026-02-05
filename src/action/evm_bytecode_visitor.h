@@ -53,7 +53,7 @@ private:
       const uint8_t *Bytecode =
           reinterpret_cast<const uint8_t *>(Ctx->getBytecode());
       size_t BytecodeSize = Ctx->getBytecodeSize();
-      EVMAnalyzer Analyzer;
+      EVMAnalyzer Analyzer(Ctx->getRevision());
       Analyzer.analyze(Bytecode, BytecodeSize);
 
       const uint8_t *Ip = Bytecode;
@@ -171,6 +171,9 @@ private:
           break;
         case OP_SAR:
           handleShift<BinaryOperator::BO_SHR_S>();
+          break;
+        case OP_CLZ:
+          handleClz();
           break;
         case OP_POP:
           handlePop();
@@ -636,6 +639,11 @@ private:
     const auto &BlockInfos = Analyzer.getBlockInfos();
     ZEN_ASSERT(BlockInfos.count(PC) > 0 && "Block info not found");
     const auto &BlockInfo = BlockInfos.at(PC);
+    if (BlockInfo.HasUndefinedInstr) {
+      Builder.handleUndefined();
+      InDeadCode = true;
+      return;
+    }
     if (static_cast<size_t>(-BlockInfo.MinStackHeight) > EVM_MAX_STACK_SIZE) {
       Builder.handleTrap(common::ErrorCode::EVMStackUnderflow);
       InDeadCode = true;
@@ -760,6 +768,12 @@ private:
   void handleNot() {
     Operand Opnd = pop();
     Operand Result = Builder.handleNot(Opnd);
+    push(Result);
+  }
+
+  void handleClz() {
+    Operand Opnd = pop();
+    Operand Result = Builder.handleClz(Opnd);
     push(Result);
   }
 

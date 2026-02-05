@@ -117,7 +117,8 @@ const RuntimeFunctions &getRuntimeFunctionTable() {
       .HandleInvalid = &evmHandleInvalid,
       .HandleUndefined = &evmHandleUndefined,
       .HandleSelfDestruct = &evmHandleSelfDestruct,
-      .GetKeccak256 = &evmGetKeccak256};
+      .GetKeccak256 = &evmGetKeccak256,
+      .GetClz = &evmGetClz};
   return Table;
 }
 
@@ -177,18 +178,8 @@ const intx::uint256 *evmGetSMod(zen::runtime::EVMInstance *Instance,
     return storeUint256Result(intx::uint256{0});
   }
 
-  // Check if dividend is negative (MSB set)
-  bool isDividendNegative = (Dividend >> 255) != 0;
-
-  // Convert to absolute values
-  intx::uint256 absDividend = isDividendNegative ? (~Dividend + 1) : Dividend;
-  intx::uint256 absDivisor = Divisor; // Divisor sign doesn't affect modulo
-
-  // Perform unsigned modulo
-  intx::uint256 absResult = absDividend % absDivisor;
-
-  // Apply sign: result has same sign as dividend
-  return storeUint256Result(isDividendNegative ? (~absResult + 1) : absResult);
+  intx::uint256 Result = intx::sdivrem(Dividend, Divisor).rem;
+  return storeUint256Result(Result);
 }
 
 const intx::uint256 *evmGetAddMod(zen::runtime::EVMInstance *Instance,
@@ -729,6 +720,18 @@ const uint8_t *evmHandleCreateInternal(zen::runtime::EVMInstance *Instance,
     return ZeroAddress;
   }
 
+  // Calculate required memory size and charge gas
+  const uint8_t *InitCode = nullptr;
+  if (Size > 0) {
+    if (!Instance->expandMemoryChecked(Offset, Size)) {
+      Instance->setReturnData({});
+      return ZeroAddress;
+    }
+
+    uint8_t *MemoryBase = Instance->getMemoryBase();
+    InitCode = MemoryBase + Offset;
+  }
+
   evmc_revision Rev = Instance->getRevision();
   if (Rev >= EVMC_SHANGHAI && Size > zen::evm::MAX_SIZE_OF_INITCODE) {
     Instance->chargeGas(Instance->getGas() + 1);
@@ -759,18 +762,6 @@ const uint8_t *evmHandleCreateInternal(zen::runtime::EVMInstance *Instance,
     return ZeroAddress;
   }
 
-  // Calculate required memory size and charge gas
-  const uint8_t *InitCode = nullptr;
-  if (Size > 0) {
-    if (!Instance->expandMemoryChecked(Offset, Size)) {
-      Instance->setReturnData({});
-      return ZeroAddress;
-    }
-
-    uint8_t *MemoryBase = Instance->getMemoryBase();
-    InitCode = MemoryBase + Offset;
-  }
-
   // Create message for CREATE/CREATE2
   evmc_message CreateMsg = {};
   CreateMsg.kind = CallKind;
@@ -799,16 +790,12 @@ const uint8_t *evmHandleCreateInternal(zen::runtime::EVMInstance *Instance,
       CreateMsg.gas > 0 ? static_cast<uint64_t>(CreateMsg.gas) : 0;
   uint64_t GasLeft =
       Result.gas_left > 0 ? static_cast<uint64_t>(Result.gas_left) : 0;
-  if (Result.status_code != EVMC_SUCCESS && Result.status_code != EVMC_REVERT) {
-    GasLeft = 0;
-  }
   uint64_t GasUsed = ProvidedGas > GasLeft ? ProvidedGas - GasLeft : 0;
   if (GasUsed != 0) {
     Instance->chargeGas(GasUsed);
   }
-  if (Result.gas_refund > 0) {
-    Instance->addGasRefund(Result.gas_refund);
-  }
+  // Track subcall refund (may be negative)
+  Instance->addGasRefund(Result.gas_refund);
 
   std::vector<uint8_t> ReturnData(Result.output_data,
                                   Result.output_data + Result.output_size);
@@ -857,7 +844,7 @@ static uint64_t evmHandleCallInternal(zen::runtime::EVMInstance *Instance,
   const bool HasValueArgs = CallKind == EVMC_CALL || CallKind == EVMC_CALLCODE;
   const bool HasValue = Value != 0;
 
-  if (HasValueArgs && HasValue && Instance->isStaticMode()) {
+  if (CallKind == EVMC_CALL && HasValue && Instance->isStaticMode()) {
     triggerStaticModeViolation(Instance);
     return 0;
   }
@@ -961,17 +948,13 @@ static uint64_t evmHandleCallInternal(zen::runtime::EVMInstance *Instance,
   // Charge the caller for the gas actually consumed by the callee.
   CallGas = CallMsg.gas > 0 ? static_cast<uint64_t>(CallMsg.gas) : 0;
   GasLeft = Result.gas_left > 0 ? static_cast<uint64_t>(Result.gas_left) : 0;
-  if (Result.status_code != EVMC_SUCCESS && Result.status_code != EVMC_REVERT) {
-    GasLeft = 0;
-  }
   uint64_t GasUsed = CallGas > GasLeft ? CallGas - GasLeft : 0;
   if (GasUsed > 0) {
     Instance->chargeGas(GasUsed);
   }
 
-  if (Result.gas_refund > 0) {
-    Instance->addGasRefund(Result.gas_refund);
-  }
+  // Track subcall refund (may be negative)
+  Instance->addGasRefund(Result.gas_refund);
 
   // Copy return data to memory if output area is specified.
   // Per EVM semantics, bytes beyond returned data length remain unchanged.
@@ -1010,6 +993,8 @@ uint64_t evmHandleCallCode(zen::runtime::EVMInstance *Instance, uint64_t Gas,
 
 void evmHandleInvalid(zen::runtime::EVMInstance *Instance) {
   // Immediately terminate the execution and return the invalid code (4)
+  Instance->restoreGasRefundSnapshot();
+  Instance->setReturnData({});
   evmc::Result ExeResult(
       EVMC_INVALID_INSTRUCTION, 0, Instance ? Instance->getGasRefund() : 0,
       Instance->getReturnData().data(), Instance->getReturnData().size());
@@ -1020,6 +1005,8 @@ void evmHandleInvalid(zen::runtime::EVMInstance *Instance) {
 
 void evmHandleUndefined(zen::runtime::EVMInstance *Instance) {
   // Immediately terminate the execution and return the undefined code
+  Instance->restoreGasRefundSnapshot();
+  Instance->setReturnData({});
   evmc::Result ExeResult(
       EVMC_UNDEFINED_INSTRUCTION, 0, Instance ? Instance->getGasRefund() : 0,
       Instance->getReturnData().data(), Instance->getReturnData().size());
@@ -1057,6 +1044,7 @@ void evmSetRevert(zen::runtime::EVMInstance *Instance, uint64_t Offset,
     ReturnData =
         std::vector<uint8_t>(MemoryBase + Offset, MemoryBase + Offset + Size);
   }
+  Instance->restoreGasRefundSnapshot();
   Instance->setReturnData(std::move(ReturnData));
   const int64_t GasLeft =
       Instance ? static_cast<int64_t>(Instance->getGas()) : 0;
@@ -1146,7 +1134,12 @@ void evmSetSStore(zen::runtime::EVMInstance *Instance,
     return;
   }
   const evmc_message *Msg = Instance->getCurrentMessage();
-  evmc_revision Rev = Instance->getRevision();
+  const evmc_revision Rev = Instance->getRevision();
+  if (Rev >= EVMC_ISTANBUL &&
+      Instance->getGas() <= zen::evm::SSTORE_REQUIRED_ISTANBUL) {
+    zen::runtime::EVMInstance::triggerInstanceExceptionOnJIT(
+        Instance, zen::common::ErrorCode::GasLimitExceeded);
+  }
   const auto Key = intx::be::store<evmc::bytes32>(Index);
   const auto Val = intx::be::store<evmc::bytes32>(Value);
 
@@ -1155,16 +1148,11 @@ void evmSetSStore(zen::runtime::EVMInstance *Instance,
        Module->Host->access_storage(Msg->recipient, Key) == EVMC_ACCESS_COLD)
           ? zen::evm::COLD_SLOAD_COST
           : 0;
-  const auto PrevValue = Module->Host->get_storage(Msg->recipient, Key);
   const auto Status = Module->Host->set_storage(Msg->recipient, Key, Val);
 
   const auto [GasCostWarm, GasReFund] = zen::evm::SSTORE_COSTS[Rev][Status];
 
   const auto GasCost = GasCostCold + GasCostWarm;
-  if ((uint64_t)GasCost > Instance->getGas()) {
-    zen::runtime::EVMInstance::triggerInstanceExceptionOnJIT(
-        Instance, zen::common::ErrorCode::GasLimitExceeded);
-  }
   Instance->chargeGas(GasCost);
   Instance->addGasRefund(GasReFund);
 }
@@ -1249,5 +1237,13 @@ void evmHandleSelfDestruct(zen::runtime::EVMInstance *Instance,
     Instance->setExeResult(std::move(ExeResult));
     Instance->exit(0);
   }
+}
+
+const intx::uint256 *evmGetClz(zen::runtime::EVMInstance *Instance,
+                               const intx::uint256 &Value) {
+  uint64_t clzResult = intx::clz(Value);
+  intx::uint256 result;
+  result[0] = clzResult;
+  return storeUint256Result(result);
 }
 } // namespace COMPILER

@@ -119,10 +119,10 @@ public:
             : Config.Message.recipient;
     const bool IsPrecompile =
         precompile::isModExpPrecompile(PrecompileAddr) ||
-        precompile::isBlake2bPrecompile(PrecompileAddr, ActiveRevision);
-    if ((!Config.Bytecode || Config.BytecodeSize == 0) && !IsCreateTx &&
-        !IsPrecompile) {
-      Result.ErrorMessage = "Bytecode buffer is empty";
+        precompile::isBlake2bPrecompile(PrecompileAddr, ActiveRevision) ||
+        precompile::isIdentityPrecompile(PrecompileAddr);
+    if (!Config.Bytecode && Config.BytecodeSize != 0) {
+      Result.ErrorMessage = "Bytecode buffer is null";
       return Result;
     }
 
@@ -473,6 +473,9 @@ public:
     if (precompile::isModExpPrecompile(PrecompileAddr)) {
       return precompile::executeModExp(Msg, Revision, ReturnData);
     }
+    if (precompile::isIdentityPrecompile(PrecompileAddr)) {
+      return precompile::executeIdentity(Msg, ReturnData);
+    }
 
     // For CALLCODE and DELEGATECALL, code comes from code_address, not
     // recipient
@@ -659,6 +662,12 @@ public:
       return true;
     if (Acc.codehash != EMPTY_CODE_HASH)
       return true;
+    if (Revision >= EVMC_PARIS) {
+      for (const auto &Slot : Acc.storage) {
+        if (!evmc::is_zero(Slot.second.current))
+          return true;
+      }
+    }
     return false;
   }
   evmc_message prepareMessage(evmc_message Msg) noexcept {

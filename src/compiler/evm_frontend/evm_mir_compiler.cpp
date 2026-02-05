@@ -984,13 +984,35 @@ void EVMMirBuilder::handleJump(Operand Dest) {
   MBasicBlock *InvalidJumpBB =
       getOrCreateExceptionSetBB(ErrorCode::EVMBadJumpDestination);
   if (Dest.isConstant()) {
-    uint64_t ConstDest = Dest.getConstValue()[0];
+    const auto &ConstValue = Dest.getConstValue();
+    if ((ConstValue[3] | ConstValue[2] | ConstValue[1]) != 0) {
+      createInstruction<BrInstruction>(true, Ctx, InvalidJumpBB);
+      addSuccessor(InvalidJumpBB);
+      return;
+    }
+    uint64_t ConstDest = ConstValue[0];
     implementConstantJump(ConstDest, InvalidJumpBB);
-  } else {
-    U256Inst DestComponents = extractU256Operand(Dest);
-    MInstruction *JumpTarget = DestComponents[0];
-    implementIndirectJump(JumpTarget, InvalidJumpBB);
+    return;
   }
+
+  U256Inst DestComponents = extractU256Operand(Dest);
+  MInstruction *JumpTarget = DestComponents[0];
+  MType *MirI64Type =
+      EVMFrontendContext::getMIRTypeFromEVMType(EVMType::UINT64);
+  MInstruction *Zero = createIntConstInstruction(MirI64Type, 0);
+  MInstruction *HighOr = createInstruction<BinaryInstruction>(
+      false, OP_or, MirI64Type, DestComponents[1], DestComponents[2]);
+  HighOr = createInstruction<BinaryInstruction>(false, OP_or, MirI64Type,
+                                                HighOr, DestComponents[3]);
+  MInstruction *HighNonZero = createInstruction<CmpInstruction>(
+      false, CmpInstruction::Predicate::ICMP_NE, &Ctx.I64Type, HighOr, Zero);
+  MBasicBlock *ValidJumpBB = createBasicBlock();
+  createInstruction<BrIfInstruction>(true, Ctx, HighNonZero, InvalidJumpBB,
+                                     ValidJumpBB);
+  addSuccessor(InvalidJumpBB);
+  addSuccessor(ValidJumpBB);
+  setInsertBlock(ValidJumpBB);
+  implementIndirectJump(JumpTarget, InvalidJumpBB);
 }
 
 void EVMMirBuilder::handleJumpI(Operand Dest, Operand Cond) {
@@ -1034,9 +1056,28 @@ void EVMMirBuilder::handleJumpI(Operand Dest, Operand Cond) {
     addSuccessor(FallThroughBB);
     setInsertBlock(JumpTableBB);
     if (Dest.isConstant()) {
-      uint64_t ConstDest = Dest.getConstValue()[0];
-      implementConstantJump(ConstDest, InvalidJumpBB);
+      const auto &ConstValue = Dest.getConstValue();
+      if ((ConstValue[3] | ConstValue[2] | ConstValue[1]) != 0) {
+        createInstruction<BrInstruction>(true, Ctx, InvalidJumpBB);
+        addSuccessor(InvalidJumpBB);
+      } else {
+        uint64_t ConstDest = ConstValue[0];
+        implementConstantJump(ConstDest, InvalidJumpBB);
+      }
     } else {
+      MInstruction *HighOr = createInstruction<BinaryInstruction>(
+          false, OP_or, MirI64Type, DestComponents[1], DestComponents[2]);
+      HighOr = createInstruction<BinaryInstruction>(false, OP_or, MirI64Type,
+                                                    HighOr, DestComponents[3]);
+      MInstruction *HighNonZero = createInstruction<CmpInstruction>(
+          false, CmpInstruction::Predicate::ICMP_NE, &Ctx.I64Type, HighOr,
+          Zero);
+      MBasicBlock *ValidJumpBB = createBasicBlock();
+      createInstruction<BrIfInstruction>(true, Ctx, HighNonZero, InvalidJumpBB,
+                                         ValidJumpBB);
+      addSuccessor(InvalidJumpBB);
+      addSuccessor(ValidJumpBB);
+      setInsertBlock(ValidJumpBB);
       implementIndirectJump(JumpTarget, InvalidJumpBB);
     }
   }
@@ -1382,6 +1423,13 @@ typename EVMMirBuilder::Operand EVMMirBuilder::handleNot(const Operand &LHSOp) {
   }
 
   return Operand(Result, EVMType::UINT256);
+}
+
+typename EVMMirBuilder::Operand
+EVMMirBuilder::handleClz(const Operand &ValueOp) {
+  const auto &RuntimeFunctions = getRuntimeFunctionTable();
+  return callRuntimeFor<const intx::uint256 *, const intx::uint256 &>(
+      RuntimeFunctions.GetClz, ValueOp);
 }
 
 EVMMirBuilder::U256Inst
@@ -1882,14 +1930,23 @@ EVMMirBuilder::handleSignextend(Operand IndexOp, Operand ValueOp) {
   // Calculate sign extension mask
   // FullMask = (1 << (BitOffset + 1)) - 1
   // InvMask = ~FullMask = FullMask ^ AllOnes
+  // Note: When BitOffset == 63, MaskBits == 64, and (1 << 64) causes undefined
+  // behavior on x86-64 (SHL masks shift amount to 6 bits, so 1 << 64 becomes
+  // 1 << 0 = 1). We need to handle this case specially.
   MInstruction *One = createIntConstInstruction(MirI64Type, 1);
   MInstruction *AllOnes = createIntConstInstruction(MirI64Type, ~0ULL);
   MInstruction *MaskBits = createInstruction<BinaryInstruction>(
       false, OP_add, MirI64Type, BitOffset, One);
+  MInstruction *Is64 = createInstruction<CmpInstruction>(
+      false, CmpInstruction::Predicate::ICMP_EQ, &Ctx.I64Type, MaskBits,
+      Const64);
   MInstruction *Mask = createInstruction<BinaryInstruction>(
       false, OP_shl, MirI64Type, One, MaskBits);
-  MInstruction *FullMask = createInstruction<BinaryInstruction>(
+  MInstruction *FullMaskNormal = createInstruction<BinaryInstruction>(
       false, OP_sub, MirI64Type, Mask, One);
+  // When MaskBits == 64, FullMask should be AllOnes (0xFFFFFFFFFFFFFFFF)
+  MInstruction *FullMask = createInstruction<SelectInstruction>(
+      false, MirI64Type, Is64, AllOnes, FullMaskNormal);
   MInstruction *InvMask = createInstruction<BinaryInstruction>(
       false, OP_xor, MirI64Type, FullMask, AllOnes);
 
@@ -2006,7 +2063,8 @@ typename EVMMirBuilder::Operand EVMMirBuilder::handleCallValue() {
 typename EVMMirBuilder::Operand
 EVMMirBuilder::handleCallDataLoad(Operand Offset) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(Offset);
+  uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
+  normalizeOperandU64(Offset, &Non64Value);
   return callRuntimeFor<const uint8_t *, uint64_t>(
       RuntimeFunctions.GetCallDataLoad, Offset);
 }
@@ -2030,9 +2088,9 @@ void EVMMirBuilder::handleCodeCopy(Operand DestOffsetComponents,
                                    Operand OffsetComponents,
                                    Operand SizeComponents) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(DestOffsetComponents);
-  normalizeOperandU64(OffsetComponents);
-  normalizeOperandU64(SizeComponents);
+  normalizeOffsetWithSize(DestOffsetComponents, SizeComponents);
+  uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
+  normalizeOperandU64(OffsetComponents, &Non64Value);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemory();
 #endif
@@ -2379,8 +2437,7 @@ void EVMMirBuilder::handleLogWithTopics(Operand OffsetOp, Operand SizeOp,
                                         TopicArgs... Topics) {
   ZEN_STATIC_ASSERT(NumTopics <= 4);
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(OffsetOp);
-  normalizeOperandU64(SizeOp);
+  normalizeOffsetWithSize(OffsetOp, SizeOp);
 
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemory();
@@ -2406,13 +2463,13 @@ void EVMMirBuilder::handleLogWithTopics(Operand OffsetOp, Operand SizeOp,
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   reloadGasFromMemory();
 #endif
+  reloadMemorySizeFromInstance();
 }
 
 typename EVMMirBuilder::Operand
 EVMMirBuilder::handleCreate(Operand ValueOp, Operand OffsetOp, Operand SizeOp) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(OffsetOp);
-  normalizeOperandU64(SizeOp);
+  normalizeOffsetWithSize(OffsetOp, SizeOp);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemoryFull();
 #endif
@@ -2431,8 +2488,7 @@ typename EVMMirBuilder::Operand EVMMirBuilder::handleCreate2(Operand ValueOp,
                                                              Operand SizeOp,
                                                              Operand SaltOp) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(OffsetOp);
-  normalizeOperandU64(SizeOp);
+  normalizeOffsetWithSize(OffsetOp, SizeOp);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemoryFull();
 #endif
@@ -2451,7 +2507,10 @@ EVMMirBuilder::handleCall(Operand GasOp, Operand ToAddrOp, Operand ValueOp,
                           Operand ArgsOffsetOp, Operand ArgsSizeOp,
                           Operand RetOffsetOp, Operand RetSizeOp) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(GasOp);
+  // When gas value exceeds 64 bits, use max uint64 as fallback.
+  // The runtime will cap it to available gas per EIP-150.
+  uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
+  normalizeOperandU64(GasOp, &Non64Value);
   normalizeOffsetWithSize(ArgsOffsetOp, ArgsSizeOp);
   normalizeOffsetWithSize(RetOffsetOp, RetSizeOp);
 
@@ -2475,7 +2534,10 @@ EVMMirBuilder::handleCallCode(Operand GasOp, Operand ToAddrOp, Operand ValueOp,
                               Operand ArgsOffsetOp, Operand ArgsSizeOp,
                               Operand RetOffsetOp, Operand RetSizeOp) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(GasOp);
+  // When gas value exceeds 64 bits, use max uint64 as fallback.
+  // The runtime will cap it to available gas per EIP-150.
+  uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
+  normalizeOperandU64(GasOp, &Non64Value);
   normalizeOffsetWithSize(ArgsOffsetOp, ArgsSizeOp);
   normalizeOffsetWithSize(RetOffsetOp, RetSizeOp);
 
@@ -2523,7 +2585,10 @@ EVMMirBuilder::handleDelegateCall(Operand GasOp, Operand ToAddrOp,
                                   Operand ArgsOffsetOp, Operand ArgsSizeOp,
                                   Operand RetOffsetOp, Operand RetSizeOp) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(GasOp);
+  // When gas value exceeds 64 bits, use max uint64 as fallback.
+  // The runtime will cap it to available gas per EIP-150.
+  uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
+  normalizeOperandU64(GasOp, &Non64Value);
   normalizeOffsetWithSize(ArgsOffsetOp, ArgsSizeOp);
   normalizeOffsetWithSize(RetOffsetOp, RetSizeOp);
 
@@ -2546,7 +2611,10 @@ EVMMirBuilder::handleStaticCall(Operand GasOp, Operand ToAddrOp,
                                 Operand ArgsOffsetOp, Operand ArgsSizeOp,
                                 Operand RetOffsetOp, Operand RetSizeOp) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(GasOp);
+  // When gas value exceeds 64 bits, use max uint64 as fallback.
+  // The runtime will cap it to available gas per EIP-150.
+  uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
+  normalizeOperandU64(GasOp, &Non64Value);
   normalizeOffsetWithSize(ArgsOffsetOp, ArgsSizeOp);
   normalizeOffsetWithSize(RetOffsetOp, RetSizeOp);
 
@@ -2566,8 +2634,9 @@ EVMMirBuilder::handleStaticCall(Operand GasOp, Operand ToAddrOp,
 
 void EVMMirBuilder::handleRevert(Operand OffsetOp, Operand SizeOp) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(OffsetOp);
-  normalizeOperandU64(SizeOp);
+  uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
+  normalizeOperandU64(OffsetOp, &Non64Value);
+  normalizeOperandU64(SizeOp, &Non64Value);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemoryFull();
 #endif
@@ -2673,8 +2742,7 @@ typename EVMMirBuilder::Operand
 EVMMirBuilder::handleKeccak256(Operand OffsetComponents,
                                Operand LengthComponents) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(OffsetComponents);
-  normalizeOperandU64(LengthComponents);
+  normalizeOffsetWithSize(OffsetComponents, LengthComponents);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemory();
 #endif
@@ -2987,6 +3055,9 @@ EVMMirBuilder::convertCallResult(MInstruction *CallInstr) {
 }
 
 void EVMMirBuilder::normalizeOperandU64(Operand &Param, uint64_t *Value) {
+  if (Param.getType() == EVMType::BYTES32) {
+    Param = convertBytes32ToU256Operand(Param);
+  }
   if (Param.getType() != EVMType::UINT256) {
     return;
   }
@@ -3081,6 +3152,9 @@ void EVMMirBuilder::normalizeOperandU64NonConst(Operand &Param,
 
 void EVMMirBuilder::normalizeOffsetWithSize(Operand &Offset, Operand &Size) {
   normalizeOperandU64(Size);
+  if (Offset.getType() == EVMType::BYTES32) {
+    Offset = convertBytes32ToU256Operand(Offset);
+  }
   if (Offset.getType() != EVMType::UINT256) {
     return;
   }
@@ -3364,11 +3438,10 @@ void EVMMirBuilder::handleCallDataCopy(Operand DestOffsetComponents,
                                        Operand OffsetComponents,
                                        Operand SizeComponents) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(DestOffsetComponents);
-
   uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
+  normalizeOperandU64(DestOffsetComponents, &Non64Value);
   normalizeOperandU64(OffsetComponents, &Non64Value);
-  normalizeOperandU64(SizeComponents);
+  normalizeOperandU64(SizeComponents, &Non64Value);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemory();
 #endif
@@ -3409,11 +3482,11 @@ void EVMMirBuilder::handleReturnDataCopy(Operand DestOffsetComponents,
                                          Operand OffsetComponents,
                                          Operand SizeComponents) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
-  normalizeOperandU64(DestOffsetComponents);
   // Use max uint64_t value if the offset/size is not 64-bit, because the
   // returndatacopy will trigger memory access error instead of out-of-gas
-  // when offset/size is is very large.
+  // when offset/size is very large.
   uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
+  normalizeOperandU64(DestOffsetComponents, &Non64Value);
   normalizeOperandU64(OffsetComponents, &Non64Value);
   normalizeOperandU64(SizeComponents, &Non64Value);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER

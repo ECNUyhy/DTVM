@@ -10,7 +10,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <functional>
 #include <unordered_map>
 #include <utility>
 
@@ -61,13 +60,38 @@ static bool isGasChunkTerminator(uint8_t OpcodeU8) {
   }
 }
 
+static bool isControlFlowTerminator(uint8_t OpcodeU8) {
+  switch (static_cast<evmc_opcode>(OpcodeU8)) {
+  case evmc_opcode::OP_STOP:
+  case evmc_opcode::OP_RETURN:
+  case evmc_opcode::OP_REVERT:
+  case evmc_opcode::OP_SELFDESTRUCT:
+  case evmc_opcode::OP_INVALID:
+  case evmc_opcode::OP_JUMP:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static bool isGasSensitiveTerminator(uint8_t OpcodeU8) {
+  switch (static_cast<evmc_opcode>(OpcodeU8)) {
+  case evmc_opcode::OP_GAS:
+  case evmc_opcode::OP_CREATE:
+  case evmc_opcode::OP_CREATE2:
+  case evmc_opcode::OP_CALL:
+  case evmc_opcode::OP_CALLCODE:
+  case evmc_opcode::OP_DELEGATECALL:
+  case evmc_opcode::OP_STATICCALL:
+    return true;
+  default:
+    return false;
+  }
+}
+
 static bool isJumpOpcode(uint8_t OpcodeU8) {
   return OpcodeU8 == static_cast<uint8_t>(evmc_opcode::OP_JUMP) ||
          OpcodeU8 == static_cast<uint8_t>(evmc_opcode::OP_JUMPI);
-}
-
-static bool isConditionalJumpOpcode(uint8_t OpcodeU8) {
-  return OpcodeU8 == static_cast<uint8_t>(evmc_opcode::OP_JUMPI);
 }
 
 static bool isPushOpcode(uint8_t OpcodeU8) {
@@ -363,6 +387,97 @@ static void bitsetSet(std::vector<uint64_t> &Bits, size_t Index) {
 
 static bool bitsetTest(const std::vector<uint64_t> &Bits, size_t Index) {
   return (Bits[Index / 64] & (uint64_t{1} << (Index % 64))) != 0;
+}
+
+static std::vector<uint8_t>
+computeInCycle(const std::vector<GasBlock> &Blocks) {
+  const size_t NumBlocks = Blocks.size();
+  std::vector<uint8_t> Visited(NumBlocks, 0);
+  std::vector<uint32_t> Order;
+  Order.reserve(NumBlocks);
+
+  struct DfsFrame {
+    uint32_t Node = 0;
+    size_t SuccIndex = 0;
+  };
+
+  std::vector<DfsFrame> DfsStack;
+  for (uint32_t Start = 0; Start < NumBlocks; ++Start) {
+    if (Visited[Start] != 0) {
+      continue;
+    }
+    DfsStack.push_back({Start, 0});
+    Visited[Start] = 1;
+    while (!DfsStack.empty()) {
+      DfsFrame &Frame = DfsStack.back();
+      const uint32_t Node = Frame.Node;
+      const auto &Succs = Blocks[Node].Succs;
+      bool Descended = false;
+      while (Frame.SuccIndex < Succs.size()) {
+        const uint32_t Succ = Succs[Frame.SuccIndex++];
+        if (Succ >= NumBlocks) {
+          continue;
+        }
+        if (Visited[Succ] == 0) {
+          Visited[Succ] = 1;
+          DfsStack.push_back({Succ, 0});
+          Descended = true;
+          break;
+        }
+      }
+      if (Descended) {
+        continue;
+      }
+      Order.push_back(Node);
+      DfsStack.pop_back();
+    }
+  }
+
+  std::vector<uint8_t> InCycle(NumBlocks, 0);
+  std::vector<uint8_t> Assigned(NumBlocks, 0);
+  std::vector<uint32_t> Stack;
+  Stack.reserve(NumBlocks);
+
+  for (auto It = Order.rbegin(); It != Order.rend(); ++It) {
+    const uint32_t Start = *It;
+    if (Assigned[Start] != 0) {
+      continue;
+    }
+    std::vector<uint32_t> Component;
+    Stack.push_back(Start);
+    Assigned[Start] = 1;
+    while (!Stack.empty()) {
+      const uint32_t Node = Stack.back();
+      Stack.pop_back();
+      Component.push_back(Node);
+      for (uint32_t Pred : Blocks[Node].Preds) {
+        if (Pred >= NumBlocks) {
+          continue;
+        }
+        if (Assigned[Pred] == 0) {
+          Assigned[Pred] = 1;
+          Stack.push_back(Pred);
+        }
+      }
+    }
+
+    if (Component.size() > 1) {
+      for (uint32_t Id : Component) {
+        InCycle[Id] = 1;
+      }
+      continue;
+    }
+
+    const uint32_t Only = Component.front();
+    for (uint32_t Succ : Blocks[Only].Succs) {
+      if (Succ == Only) {
+        InCycle[Only] = 1;
+        break;
+      }
+    }
+  }
+
+  return InCycle;
 }
 
 static bool bitsetEqual(const std::vector<uint64_t> &A,
@@ -740,6 +855,9 @@ static bool lemma614Update(uint32_t NodeId, const std::vector<GasBlock> &Blocks,
                            const std::vector<uint64_t> *AllowedMask,
                            std::vector<uint64_t> &Metering) {
   const auto &Node = Blocks[NodeId];
+  if (isGasSensitiveTerminator(Node.LastOpcode)) {
+    return false;
+  }
 
   uint64_t MinSucc = UINT64_MAX;
   for (uint32_t Succ : Node.Succs) {
@@ -747,6 +865,12 @@ static bool lemma614Update(uint32_t NodeId, const std::vector<GasBlock> &Blocks,
       continue;
     }
     if (AllowedMask && !bitsetTest(*AllowedMask, Succ)) {
+      continue;
+    }
+    // Only consider successors with exactly one predecessor. If a successor has
+    // multiple predecessors, we cannot move its gas to this node because
+    // different execution paths may reach it from different predecessors.
+    if (Blocks[Succ].Preds.size() != 1) {
       continue;
     }
     MinSucc = std::min(MinSucc, Metering[Succ]);
@@ -762,6 +886,10 @@ static bool lemma614Update(uint32_t NodeId, const std::vector<GasBlock> &Blocks,
       continue;
     }
     if (AllowedMask && !bitsetTest(*AllowedMask, Succ)) {
+      continue;
+    }
+    // Only subtract from successors with exactly one predecessor
+    if (Blocks[Succ].Preds.size() != 1) {
       continue;
     }
     Metering[Succ] -= MinSucc;
@@ -827,11 +955,11 @@ static bool buildGasChunksSPP(const zen::common::Byte *Code, size_t CodeSize,
   // Build CFG
   for (size_t BlockId = 0; BlockId < Blocks.size(); ++BlockId) {
     auto &Block = Blocks[BlockId];
-    const bool IsBarrier = isGasChunkTerminator(Block.LastOpcode);
-    const bool IsCondJump = isConditionalJumpOpcode(Block.LastOpcode);
+    const bool IsTerminator = isControlFlowTerminator(Block.LastOpcode);
 
-    // Add fallthrough edge (if not a barrier, or if conditional jump)
-    if ((!IsBarrier || IsCondJump) && Block.End < CodeSize) {
+    // Add fallthrough edge for non-terminating opcodes (CALL/CREATE/GAS
+    // included).
+    if (!IsTerminator && Block.End < CodeSize) {
       const uint32_t SuccId = BlockAtPc[Block.End];
       if (SuccId != UINT32_MAX) {
         addEdge(Blocks, static_cast<uint32_t>(BlockId), SuccId);
@@ -871,6 +999,8 @@ static bool buildGasChunksSPP(const zen::common::Byte *Code, size_t CodeSize,
   for (size_t Index = 0; Index < RevTopo.size(); ++Index) {
     RevTopoIndex[RevTopo[Index]] = Index;
   }
+  // BackEdges give topo order; SCCs mark cyclic regions to skip updates.
+  const std::vector<uint8_t> InCycle = computeInCycle(Blocks);
 
   std::vector<LoopInfo> Loops;
   std::vector<int32_t> LoopOf;
@@ -885,11 +1015,29 @@ static bool buildGasChunksSPP(const zen::common::Byte *Code, size_t CodeSize,
     Metering[Id] = Blocks[Id].Cost;
   }
 
+  std::vector<uint64_t> NonCycleMask(bitsetWordCount(Blocks.size()), 0);
+  for (size_t Id = 0; Id < Blocks.size(); ++Id) {
+    if (InCycle[Id] == 0) {
+      bitsetSet(NonCycleMask, Id);
+    }
+  }
+
   if (!UseLinearSPP) {
     for (uint32_t NodeId : RevTopo) {
-      lemma614Update(NodeId, Blocks, &BackEdges, nullptr, Metering);
+      if (InCycle[NodeId] != 0) {
+        continue;
+      }
+      lemma614Update(NodeId, Blocks, &BackEdges, &NonCycleMask, Metering);
     }
   } else {
+    std::vector<std::vector<uint64_t>> LoopNonCycleMask(Loops.size());
+    for (size_t LoopId = 0; LoopId < Loops.size(); ++LoopId) {
+      LoopNonCycleMask[LoopId] = Loops[LoopId].NodeMask;
+      for (size_t W = 0; W < LoopNonCycleMask[LoopId].size(); ++W) {
+        LoopNonCycleMask[LoopId][W] &= NonCycleMask[W];
+      }
+    }
+
     std::vector<std::vector<uint32_t>> Recorded(Loops.size());
     std::vector<size_t> RecordedCount(Loops.size(), 0);
     std::vector<size_t> ExitSeenCount(Loops.size(), 0);
@@ -916,7 +1064,10 @@ static bool buildGasChunksSPP(const zen::common::Byte *Code, size_t CodeSize,
         return RevTopoIndex[A] < RevTopoIndex[B];
       });
       for (uint32_t NodeId : Order) {
-        lemma614Update(NodeId, Blocks, nullptr, &Loops[LoopId].NodeMask,
+        if (InCycle[NodeId] != 0) {
+          continue;
+        }
+        lemma614Update(NodeId, Blocks, nullptr, &LoopNonCycleMask[LoopId],
                        Metering);
       }
       LoopProcessed[LoopId] = 1;
@@ -925,7 +1076,10 @@ static bool buildGasChunksSPP(const zen::common::Byte *Code, size_t CodeSize,
     for (uint32_t NodeId : RevTopo) {
       const int32_t LoopId = (NodeId < LoopOf.size()) ? LoopOf[NodeId] : -1;
       if (LoopId < 0) {
-        lemma614Update(NodeId, Blocks, &BackEdges, nullptr, Metering);
+        if (InCycle[NodeId] != 0) {
+          continue;
+        }
+        lemma614Update(NodeId, Blocks, &BackEdges, &NonCycleMask, Metering);
       } else {
         Recorded[LoopId].push_back(NodeId);
         ++RecordedCount[LoopId];
@@ -949,6 +1103,12 @@ static bool buildGasChunksSPP(const zen::common::Byte *Code, size_t CodeSize,
 
   // Write results to output arrays
   for (size_t Id = 0; Id < Blocks.size(); ++Id) {
+    // Skip empty blocks created by splitCriticalEdges to avoid overwriting
+    // valid block entries. Empty blocks have no instructions and their Start
+    // position may conflict with real blocks.
+    if (Blocks[Id].Start == Blocks[Id].End) {
+      continue;
+    }
     GasChunkEnd[Blocks[Id].Start] = Blocks[Id].End;
     GasChunkCost[Blocks[Id].Start] = Metering[Id];
   }

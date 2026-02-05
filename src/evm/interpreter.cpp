@@ -9,6 +9,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <limits>
 
 using namespace zen;
 using namespace zen::evm;
@@ -335,7 +336,10 @@ void BaseInterpreter::interpret() {
   }
 
   auto Uint256ToUint64 = [](const intx::uint256 &Value) -> uint64_t {
-    return static_cast<uint64_t>(Value & 0xFFFFFFFFFFFFFFFFULL);
+    if ((Value[3] | Value[2] | Value[1]) != 0) {
+      return std::numeric_limits<uint64_t>::max();
+    }
+    return Value[0];
   };
 
   while (Frame->Pc < CodeSize) {
@@ -350,8 +354,8 @@ void BaseInterpreter::interpret() {
         const uint8_t OpcodeU8 = static_cast<uint8_t>(OpcodeByte);
         const evmc_opcode Op = static_cast<evmc_opcode>(OpcodeByte);
 
-        // EVMC does not have opcodes like MCOPY... in CANCUN
-        if (Revision < EVMC_CANCUN && NamesTable[Op] == NULL) {
+        // Use EVMC names with latest opcodes like MCOPY, CLZ...
+        if (NamesTable[Op] == NULL) {
           // Undefined instruction
           Context.setStatus(EVMC_UNDEFINED_INSTRUCTION);
           break;
@@ -454,6 +458,9 @@ void BaseInterpreter::interpret() {
           break;
         case evmc_opcode::OP_SAR:
           SarHandler::doExecute();
+          break;
+        case evmc_opcode::OP_CLZ:
+          ClzHandler::doExecute();
           break;
 
         case evmc_opcode::OP_KECCAK256:
@@ -896,6 +903,11 @@ void BaseInterpreter::interpret() {
 
     case evmc_opcode::OP_SAR: {
       SarHandler::execute();
+      break;
+    }
+
+    case evmc_opcode::OP_CLZ: {
+      ClzHandler::execute();
       break;
     }
 
