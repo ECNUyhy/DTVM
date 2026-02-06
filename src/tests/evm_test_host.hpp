@@ -45,7 +45,7 @@ private:
       PrewarmStorageKeys;
   std::unordered_set<evmc::address> CreatedInTx;
   std::unordered_set<evmc::address> PendingSelfdestructs;
-  uint64_t CallStipendRefund = 0;
+  uint64_t CallStipendRefund = 0; // track CALL stipend refunds for prepaid fees
   bool FeesPrepaidInTx = false;
 
 public:
@@ -501,7 +501,7 @@ public:
           toUint256Bytes(Msg.value) != intx::uint256{0} &&
           ParentResult.status_code == EVMC_SUCCESS &&
           ParentResult.gas_left < Msg.gas) {
-        CallStipendRefund += CALL_GAS_STIPEND;
+        this->CallStipendRefund += CALL_GAS_STIPEND;
       }
       return ParentResult;
     }
