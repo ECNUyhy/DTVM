@@ -46,7 +46,11 @@ inline bool isIdentityPrecompile(const evmc::address &Addr) noexcept {
   return Addr.bytes[sizeof(Addr.bytes) - 1] == 0x04;
 }
 
-inline bool isBnAddPrecompile(const evmc::address &Addr) noexcept {
+inline bool isBnAddPrecompile(const evmc::address &Addr,
+                              evmc_revision Revision) noexcept {
+  if (Revision < EVMC_BYZANTIUM) {
+    return false;
+  }
   for (size_t I = 0; I + 1 < sizeof(Addr.bytes); ++I) {
     if (Addr.bytes[I] != 0) {
       return false;
@@ -55,7 +59,11 @@ inline bool isBnAddPrecompile(const evmc::address &Addr) noexcept {
   return Addr.bytes[sizeof(Addr.bytes) - 1] == 0x06;
 }
 
-inline bool isBnMulPrecompile(const evmc::address &Addr) noexcept {
+inline bool isBnMulPrecompile(const evmc::address &Addr,
+                              evmc_revision Revision) noexcept {
+  if (Revision < EVMC_BYZANTIUM) {
+    return false;
+  }
   for (size_t I = 0; I + 1 < sizeof(Addr.bytes); ++I) {
     if (Addr.bytes[I] != 0) {
       return false;
@@ -64,7 +72,11 @@ inline bool isBnMulPrecompile(const evmc::address &Addr) noexcept {
   return Addr.bytes[sizeof(Addr.bytes) - 1] == 0x07;
 }
 
-inline bool isBnPairingPrecompile(const evmc::address &Addr) noexcept {
+inline bool isBnPairingPrecompile(const evmc::address &Addr,
+                                  evmc_revision Revision) noexcept {
+  if (Revision < EVMC_BYZANTIUM) {
+    return false;
+  }
   for (size_t I = 0; I + 1 < sizeof(Addr.bytes); ++I) {
     if (Addr.bytes[I] != 0) {
       return false;
