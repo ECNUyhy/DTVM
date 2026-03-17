@@ -8,6 +8,7 @@
 #include "evm/gas_storage_cost.h"
 #include "runtime/evm_instance.h"
 #include "utils/hash_utils.h"
+#include "utils/logging.h"
 #include <cstring>
 
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
@@ -3186,6 +3187,7 @@ EVMMirBuilder::handleMLoad(Operand AddrComponents) {
   MInstruction *Overflow = createInstruction<CmpInstruction>(
       false, CmpInstruction::Predicate::ICMP_ULT, I64Type, RequiredSize,
       Offset);
+  ++MemStats.MLoadExpandCount;
   expandMemoryIR(RequiredSize, Overflow);
 
   MInstruction *MemBase = getMemoryDataPointer();
@@ -3244,6 +3246,7 @@ void EVMMirBuilder::handleMStore(Operand AddrComponents,
   MInstruction *Overflow = createInstruction<CmpInstruction>(
       false, CmpInstruction::Predicate::ICMP_ULT, I64Type, RequiredSize,
       Offset);
+  ++MemStats.MStoreExpandCount;
   expandMemoryIR(RequiredSize, Overflow);
 
   MInstruction *MemBase = getMemoryDataPointer();
@@ -3297,6 +3300,7 @@ void EVMMirBuilder::handleMStore8(Operand AddrComponents,
   MInstruction *Overflow = createInstruction<CmpInstruction>(
       false, CmpInstruction::Predicate::ICMP_ULT, I64Type, RequiredSize,
       Offset);
+  ++MemStats.MStore8ExpandCount;
   expandMemoryIR(RequiredSize, Overflow);
 
   MInstruction *MemBase = getMemoryDataPointer();
@@ -3385,6 +3389,7 @@ void EVMMirBuilder::handleMCopy(Operand DestAddrComponents,
       false, CmpInstruction::Predicate::ICMP_UGT, I64Type, DestEnd, SrcEnd);
   MInstruction *RequiredSize = createInstruction<SelectInstruction>(
       false, I64Type, DestGreater, DestEnd, SrcEnd);
+  ++MemStats.MCopyExpandCount;
   expandMemoryIR(RequiredSize, Overflow);
 
   MInstruction *MemBase = getMemoryDataPointer();
@@ -4600,9 +4605,36 @@ typename EVMMirBuilder::Operand EVMMirBuilder::handleReturnDataSize() {
   return callRuntimeFor<uint64_t>(RuntimeFunctions.GetReturnDataSize);
 }
 
+bool EVMMirBuilder::hasMemoryCompileStats() const {
+  return MemStats.MLoadExpandCount != 0 || MemStats.MStoreExpandCount != 0 ||
+         MemStats.MStore8ExpandCount != 0 || MemStats.MCopyExpandCount != 0 ||
+         MemStats.ReloadMemorySizeCount != 0 ||
+         MemStats.GetMemoryDataPointerCount != 0 ||
+         MemStats.ExpandNeedExpandCFGCount != 0;
+}
+
+void EVMMirBuilder::dumpMemoryCompileStats() const {
+  if (!hasMemoryCompileStats()) {
+    return;
+  }
+
+  ZEN_LOG_DEBUG(
+      "[EVM-MEM-SUMMARY] mload_expand=%llu mstore_expand=%llu "
+      "mstore8_expand=%llu mcopy_expand=%llu reload_mem_size=%llu "
+      "get_mem_ptr=%llu need_expand_cfg=%llu",
+      static_cast<unsigned long long>(MemStats.MLoadExpandCount),
+      static_cast<unsigned long long>(MemStats.MStoreExpandCount),
+      static_cast<unsigned long long>(MemStats.MStore8ExpandCount),
+      static_cast<unsigned long long>(MemStats.MCopyExpandCount),
+      static_cast<unsigned long long>(MemStats.ReloadMemorySizeCount),
+      static_cast<unsigned long long>(MemStats.GetMemoryDataPointerCount),
+      static_cast<unsigned long long>(MemStats.ExpandNeedExpandCFGCount));
+}
+
 // ==================== Memory Operation Helper Methods ====================
 
 MInstruction *EVMMirBuilder::getMemoryDataPointer() {
+  ++MemStats.GetMemoryDataPointerCount;
   MType *I64Type = &Ctx.I64Type;
   MPointerType *VoidPtrType = createVoidPtrType();
   const int32_t MemoryBaseOffset =
@@ -4628,6 +4660,7 @@ MInstruction *EVMMirBuilder::getMemorySize() {
 }
 
 void EVMMirBuilder::reloadMemorySizeFromInstance() {
+  ++MemStats.ReloadMemorySizeCount;
   if (!MemorySizeVar) {
     return;
   }
@@ -4815,6 +4848,7 @@ void EVMMirBuilder::expandMemoryIR(MInstruction *RequiredSize,
   MInstruction *CurrentSize = getMemorySize();
 
   // Check if expansion is needed
+  ++MemStats.ExpandNeedExpandCFGCount;
   MInstruction *NeedExpand = createInstruction<CmpInstruction>(
       false, CmpInstruction::Predicate::ICMP_UGT, I64Type, RequiredSize,
       CurrentSize);

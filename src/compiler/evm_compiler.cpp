@@ -44,6 +44,7 @@ void EVMJITCompiler::compileEVMToMC(EVMFrontendContext &Ctx, MModule &Mod,
   MFunc.setFunctionType(Mod.getFuncType(FuncIdx));
   EVMMirBuilder MIRBuilder(Ctx, MFunc);
   MIRBuilder.compile(&Ctx);
+  MIRBuilder.dumpMemoryCompileStats();
 
   // Apply MIR optimizations and generate machine code
   compileMIRToCgIR(Mod, MFunc, CgFunc, DisableGreedyRA);

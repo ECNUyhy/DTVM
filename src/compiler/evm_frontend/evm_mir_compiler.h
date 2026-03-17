@@ -590,6 +590,7 @@ public:
   void handleReturnDataCopy(Operand DestOffsetComponents,
                             Operand OffsetComponents, Operand SizeComponents);
   Operand handleReturnDataSize();
+  void dumpMemoryCompileStats() const;
   template <size_t NumTopics, typename... TopicArgs>
   void handleLogWithTopics(Operand OffsetOp, Operand SizeOp,
                            TopicArgs... Topics);
@@ -890,6 +891,20 @@ private:
   Variable *StackSizeVar = nullptr;
   Variable *MemoryBaseVar = nullptr;
   Variable *MemorySizeVar = nullptr;
+
+  struct MemoryCompileStats {
+    uint64_t MLoadExpandCount = 0;
+    uint64_t MStoreExpandCount = 0;
+    uint64_t MStore8ExpandCount = 0;
+    uint64_t MCopyExpandCount = 0;
+
+    uint64_t ReloadMemorySizeCount = 0;
+    uint64_t GetMemoryDataPointerCount = 0;
+
+    uint64_t ExpandNeedExpandCFGCount = 0;
+  };
+  bool hasMemoryCompileStats() const;
+  MemoryCompileStats MemStats;
 
   // Helper methods for memory operations
   MInstruction *getMemoryDataPointer();
