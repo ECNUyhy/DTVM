@@ -4841,10 +4841,9 @@ bool EVMMirBuilder::tryConsumeConstBlockMemoryPrecheck() {
 
   if (!CurBlockConstPrecheckPlan.Emitted) {
     MType *I64Type = &Ctx.I64Type;
-    MType *I1Type = &Ctx.I1Type;
     MInstruction *RequiredSize = createIntConstInstruction(
         I64Type, CurBlockConstPrecheckPlan.MaxRequiredSize);
-    MInstruction *NoOverflow = createIntConstInstruction(I1Type, 0);
+    MInstruction *NoOverflow = createIntConstInstruction(I64Type, 0);
     expandMemoryIR(RequiredSize, NoOverflow);
     CurBlockConstPrecheckPlan.Emitted = true;
 
