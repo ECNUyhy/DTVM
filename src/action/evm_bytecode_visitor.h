@@ -772,8 +772,8 @@ private:
   }
 
   static bool isBlockTerminatorOpcode(evmc_opcode Opcode) {
-    return Opcode == OP_JUMP || Opcode == OP_RETURN || Opcode == OP_STOP ||
-           Opcode == OP_INVALID || Opcode == OP_REVERT ||
+    return Opcode == OP_JUMP || Opcode == OP_JUMPI || Opcode == OP_RETURN ||
+           Opcode == OP_STOP || Opcode == OP_INVALID || Opcode == OP_REVERT ||
            Opcode == OP_SELFDESTRUCT;
   }
 
@@ -876,6 +876,9 @@ private:
       case OP_PUSH32: {
         uint8_t NumBytes =
             static_cast<uint8_t>(Opcode) - static_cast<uint8_t>(OP_PUSH0);
+        if (NumBytes > BytecodeSize - ScanPC) {
+          return {};
+        }
         ScanPC += NumBytes;
         SimStack.push_back(makeUnknownConstU64());
         break;

@@ -3188,10 +3188,12 @@ EVMMirBuilder::handleMLoad(Operand AddrComponents) {
       false, CmpInstruction::Predicate::ICMP_ULT, I64Type, RequiredSize,
       Offset);
   if (!tryConsumeConstBlockMemoryPrecheck()) {
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
     ++MemStats.MLoadExpandCount;
     if (CurBlockMemStats.Active) {
       CurBlockMemStats.ExpandCallCount++;
     }
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
     expandMemoryIR(RequiredSize, Overflow);
   }
 
@@ -3252,10 +3254,12 @@ void EVMMirBuilder::handleMStore(Operand AddrComponents,
       false, CmpInstruction::Predicate::ICMP_ULT, I64Type, RequiredSize,
       Offset);
   if (!tryConsumeConstBlockMemoryPrecheck()) {
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
     ++MemStats.MStoreExpandCount;
     if (CurBlockMemStats.Active) {
       CurBlockMemStats.ExpandCallCount++;
     }
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
     expandMemoryIR(RequiredSize, Overflow);
   }
 
@@ -3311,10 +3315,12 @@ void EVMMirBuilder::handleMStore8(Operand AddrComponents,
       false, CmpInstruction::Predicate::ICMP_ULT, I64Type, RequiredSize,
       Offset);
   if (!tryConsumeConstBlockMemoryPrecheck()) {
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
     ++MemStats.MStore8ExpandCount;
     if (CurBlockMemStats.Active) {
       CurBlockMemStats.ExpandCallCount++;
     }
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
     expandMemoryIR(RequiredSize, Overflow);
   }
 
@@ -3404,10 +3410,12 @@ void EVMMirBuilder::handleMCopy(Operand DestAddrComponents,
       false, CmpInstruction::Predicate::ICMP_UGT, I64Type, DestEnd, SrcEnd);
   MInstruction *RequiredSize = createInstruction<SelectInstruction>(
       false, I64Type, DestGreater, DestEnd, SrcEnd);
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   ++MemStats.MCopyExpandCount;
   if (CurBlockMemStats.Active) {
     CurBlockMemStats.ExpandCallCount++;
   }
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   expandMemoryIR(RequiredSize, Overflow);
 
   MInstruction *MemBase = getMemoryDataPointer();
@@ -4633,6 +4641,7 @@ bool EVMMirBuilder::hasMemoryCompileStats() const {
 }
 
 void EVMMirBuilder::noteBlockMemoryEventPC(uint64_t PC) {
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   if (!CurBlockMemStats.Active) {
     return;
   }
@@ -4641,10 +4650,17 @@ void EVMMirBuilder::noteBlockMemoryEventPC(uint64_t PC) {
     CurBlockMemStats.HasMemoryEvent = true;
   }
   CurBlockMemStats.LastMemoryEventPC = PC;
+#else
+  (void)PC;
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 }
 
 bool EVMMirBuilder::hasCurrentMemoryBlockStats() const {
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   return CurBlockMemStats.Active && CurBlockMemStats.HasMemoryEvent;
+#else
+  return false;
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 }
 
 void EVMMirBuilder::dumpMemoryCompileStats() const {
@@ -4672,8 +4688,12 @@ void EVMMirBuilder::beginMemoryCompileBlock(uint64_t EntryPC) {
   CurBlockMemStats = MemoryBlockCompileStats();
   CurBlockConstPrecheckPlan = MemoryBlockConstPrecheckPlan();
   CurBlockMemStats.Active = true;
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   CurBlockMemStats.BlockSeqId = ++NextMemoryBlockSeqId;
   CurBlockMemStats.BlockEntryPC = EntryPC;
+#else
+  (void)EntryPC;
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 }
 
 void EVMMirBuilder::setMemoryCompileBlockConstPrecheckPlan(
@@ -4693,6 +4713,7 @@ void EVMMirBuilder::noteMemoryOpcodeInBlock(evmc_opcode Opcode, uint64_t PC) {
     return;
   }
 
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   noteBlockMemoryEventPC(PC);
   CurBlockMemStats.DirectMemoryOpCount++;
   switch (Opcode) {
@@ -4714,6 +4735,10 @@ void EVMMirBuilder::noteMemoryOpcodeInBlock(evmc_opcode Opcode, uint64_t PC) {
   default:
     break;
   }
+#else
+  (void)Opcode;
+  (void)PC;
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 }
 
 void EVMMirBuilder::noteHelperOpcodeInBlock(evmc_opcode Opcode, uint64_t PC) {
@@ -4721,6 +4746,7 @@ void EVMMirBuilder::noteHelperOpcodeInBlock(evmc_opcode Opcode, uint64_t PC) {
     return;
   }
 
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   noteBlockMemoryEventPC(PC);
   CurBlockMemStats.HelperSensitiveOpCount++;
   CurBlockMemStats.HasHelperBarrier = true;
@@ -4755,16 +4781,20 @@ void EVMMirBuilder::noteHelperOpcodeInBlock(evmc_opcode Opcode, uint64_t PC) {
   default:
     break;
   }
+#else
+  (void)Opcode;
+  (void)PC;
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 }
 
 void EVMMirBuilder::endMemoryCompileBlock() {
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   if (!hasCurrentMemoryBlockStats()) {
     CurBlockMemStats.Active = false;
     CurBlockConstPrecheckPlan = MemoryBlockConstPrecheckPlan();
     return;
   }
 
-#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   ZEN_LOG_DEBUG(
       "[EVM-MEM-BLOCK] seq=%llu entry_pc=%llu first_mem_pc=%llu "
       "last_mem_pc=%llu direct_ops=%llu mload=%llu mstore=%llu "
@@ -4811,12 +4841,14 @@ bool EVMMirBuilder::tryConsumeConstBlockMemoryPrecheck() {
 
   if (!CurBlockConstPrecheckPlan.Emitted) {
     MType *I64Type = &Ctx.I64Type;
+    MType *I1Type = &Ctx.I1Type;
     MInstruction *RequiredSize = createIntConstInstruction(
         I64Type, CurBlockConstPrecheckPlan.MaxRequiredSize);
-    MInstruction *NoOverflow = createIntConstInstruction(I64Type, 0);
+    MInstruction *NoOverflow = createIntConstInstruction(I1Type, 0);
     expandMemoryIR(RequiredSize, NoOverflow);
     CurBlockConstPrecheckPlan.Emitted = true;
 
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
     ++MemStats.BlockConstPrecheckCount;
     if (CurBlockMemStats.Active) {
       CurBlockMemStats.BlockConstPrecheckCount++;
@@ -4824,6 +4856,7 @@ bool EVMMirBuilder::tryConsumeConstBlockMemoryPrecheck() {
           CurBlockConstPrecheckPlan.CoveredDirectOpsTotal;
       CurBlockMemStats.ExpandCallCount++;
     }
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   }
 
   CurBlockConstPrecheckPlan.CoveredDirectOpsRemaining--;
@@ -4836,10 +4869,12 @@ bool EVMMirBuilder::tryConsumeConstBlockMemoryPrecheck() {
 // ==================== Memory Operation Helper Methods ====================
 
 MInstruction *EVMMirBuilder::getMemoryDataPointer() {
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   ++MemStats.GetMemoryDataPointerCount;
   if (CurBlockMemStats.Active) {
     CurBlockMemStats.GetMemPtrCount++;
   }
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   MType *I64Type = &Ctx.I64Type;
   MPointerType *VoidPtrType = createVoidPtrType();
   const int32_t MemoryBaseOffset =
@@ -4865,10 +4900,12 @@ MInstruction *EVMMirBuilder::getMemorySize() {
 }
 
 void EVMMirBuilder::reloadMemorySizeFromInstance() {
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   ++MemStats.ReloadMemorySizeCount;
   if (CurBlockMemStats.Active) {
     CurBlockMemStats.ReloadMemSizeCount++;
   }
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   if (!MemorySizeVar) {
     return;
   }
@@ -5056,10 +5093,12 @@ void EVMMirBuilder::expandMemoryIR(MInstruction *RequiredSize,
   MInstruction *CurrentSize = getMemorySize();
 
   // Check if expansion is needed
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   ++MemStats.ExpandNeedExpandCFGCount;
   if (CurBlockMemStats.Active) {
     CurBlockMemStats.NeedExpandCFGCount++;
   }
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   MInstruction *NeedExpand = createInstruction<CmpInstruction>(
       false, CmpInstruction::Predicate::ICMP_UGT, I64Type, RequiredSize,
       CurrentSize);
