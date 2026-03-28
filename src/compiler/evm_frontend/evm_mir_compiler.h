@@ -594,6 +594,9 @@ public:
   void beginMemoryCompileBlock(uint64_t EntryPC);
   void setMemoryCompileBlockConstPrecheckPlan(uint64_t MaxRequiredSize,
                                               uint64_t CoveredDirectOps);
+  void setMemoryCompileBlockLinearPrecheckPlan(uint64_t AccessWidth,
+                                               uint64_t CoveredDirectOps);
+  void prepareLinearBlockMemoryPrecheck(Operand StrideComponents);
   void noteMemoryOpcodeInBlock(evmc_opcode Opcode, uint64_t PC);
   void noteHelperOpcodeInBlock(evmc_opcode Opcode, uint64_t PC);
   void endMemoryCompileBlock();
@@ -904,6 +907,7 @@ private:
     uint64_t MStore8ExpandCount = 0;
     uint64_t MCopyExpandCount = 0;
     uint64_t BlockConstPrecheckCount = 0;
+    uint64_t BlockLinearPrecheckCount = 0;
 
     uint64_t ReloadMemorySizeCount = 0;
     uint64_t GetMemoryDataPointerCount = 0;
@@ -943,6 +947,7 @@ private:
     uint64_t GetMemPtrCount = 0;
     uint64_t ReloadMemSizeCount = 0;
     uint64_t BlockConstPrecheckCount = 0;
+    uint64_t BlockLinearPrecheckCount = 0;
     uint64_t PrecheckedDirectOpCount = 0;
   };
   void noteBlockMemoryEventPC(uint64_t PC);
@@ -954,10 +959,22 @@ private:
     uint64_t CoveredDirectOpsTotal = 0;
     uint64_t CoveredDirectOpsRemaining = 0;
   };
+  struct MemoryBlockLinearPrecheckPlan {
+    bool Active = false;
+    bool Emitted = false;
+    bool HasPendingStride = false;
+    uint64_t AccessWidth = 0;
+    uint64_t CoveredDirectOpsTotal = 0;
+    uint64_t CoveredDirectOpsRemaining = 0;
+    Operand PendingStrideComponents;
+  };
   bool tryConsumeConstBlockMemoryPrecheck();
+  bool tryConsumeLinearBlockMemoryPrecheck(MInstruction *FirstAddr,
+                                           MInstruction *OrderingDep);
   uint64_t NextMemoryBlockSeqId = 0;
   MemoryBlockCompileStats CurBlockMemStats;
   MemoryBlockConstPrecheckPlan CurBlockConstPrecheckPlan;
+  MemoryBlockLinearPrecheckPlan CurBlockLinearPrecheckPlan;
 
   // Helper methods for memory operations
   MInstruction *getMemoryDataPointer();
