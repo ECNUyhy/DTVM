@@ -849,6 +849,7 @@ private:
   // Split normalization for const and non-const U256.
   void normalizeOperandU64Const(Operand &Param, uint64_t *Value = nullptr);
   void normalizeOperandU64NonConst(Operand &Param, uint64_t *Value = nullptr);
+  MInstruction *extractKnownU64LowOperand(const Operand &Opnd);
   void normalizeOffsetWithSize(Operand &Offset, Operand &Size);
 
   Operand convertSingleInstrToU256Operand(MInstruction *SingleInstr);
@@ -913,6 +914,9 @@ private:
     uint64_t PrecheckedMLoadOpCount = 0;
     uint64_t PrecheckedMStoreOpCount = 0;
     uint64_t MStoreAddrValueAliasReuseCount = 0;
+    uint64_t LinearU64AddrFastPathCount = 0;
+    uint64_t LinearU64MLoadFastPathCount = 0;
+    uint64_t LinearU64MStoreFastPathCount = 0;
 
     uint64_t ReloadMemorySizeCount = 0;
     uint64_t GetMemoryDataPointerCount = 0;
@@ -961,6 +965,9 @@ private:
     uint64_t PrecheckedMLoadOpCount = 0;
     uint64_t PrecheckedMStoreOpCount = 0;
     uint64_t MStoreAddrValueAliasReuseCount = 0;
+    uint64_t LinearU64AddrFastPathCount = 0;
+    uint64_t LinearU64MLoadFastPathCount = 0;
+    uint64_t LinearU64MStoreFastPathCount = 0;
   };
   void noteBlockMemoryEventPC(uint64_t PC);
   bool hasCurrentMemoryBlockStats() const;
