@@ -715,7 +715,8 @@ private:
       if (CurBlockLinearPrecheckPlan.Eligible) {
         Builder.setMemoryCompileBlockLinearPrecheckPlan(
             CurBlockLinearPrecheckPlan.AccessWidth,
-            CurBlockLinearPrecheckPlan.CoveredDirectOps);
+            CurBlockLinearPrecheckPlan.CoveredDirectOps,
+            CurBlockLinearPrecheckPlan.CoveredOpcode == OP_MSTORE);
       }
     }
     const auto &BlockInfo = BlockInfos.at(PC);
