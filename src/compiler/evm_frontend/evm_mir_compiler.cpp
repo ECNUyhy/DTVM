@@ -3499,9 +3499,8 @@ EVMMirBuilder::handleMLoad(Operand AddrComponents) {
       false, OP_add, I64Type, MemBase, Offset);
   MInstruction *MemPtr = createInstruction<ConversionInstruction>(
       false, OP_inttoptr, createVoidPtrType(), MemAddrInt);
-
-  Operand Bytes32Op(MemPtr, EVMType::BYTES32);
-  Operand Result = convertBytes32ToU256Operand(Bytes32Op);
+  MemPtr = anchorDirectMemoryPointer(MemPtr);
+  Operand Result = loadU256FromBytes32PointerDisplaced(MemPtr);
 
   // Pin loaded values into local variables so the backend cannot reschedule
   // the memory reads past later function calls (e.g. CODECOPY / MSTORE) that
@@ -3528,6 +3527,10 @@ EVMMirBuilder::handleMLoad(Operand AddrComponents) {
     if (CurBlockMemStats.Active) {
       ++CurBlockMemStats.PrecheckedMLoadOpCount;
     }
+  }
+  ++MemStats.DispBytes32MLoadCount;
+  if (CurBlockMemStats.Active) {
+    ++CurBlockMemStats.DispBytes32MLoadCount;
   }
 #endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 
@@ -3615,25 +3618,10 @@ void EVMMirBuilder::handleMStore(Operand AddrComponents,
   MInstruction *MemBase = getDirectMemoryDataPointer(UsedSharedPrecheck);
   MInstruction *BaseAddrInt = createInstruction<BinaryInstruction>(
       false, OP_add, I64Type, MemBase, Offset);
-
-  MPointerType *U64PtrType = MPointerType::create(Ctx, Ctx.I64Type);
-
-  auto ByteSwap64 = [&](MInstruction *Value) -> MInstruction * {
-    return createInstruction<UnaryInstruction>(false, OP_bswap, I64Type, Value);
-  };
-
-  for (int Component = 0; Component < 4; ++Component) {
-    MInstruction *RawValue = ValueParts[3 - Component];
-    MInstruction *Swapped = ByteSwap64(RawValue);
-
-    MInstruction *OffsetValue = createIntConstInstruction(
-        I64Type, static_cast<uint64_t>(Component * 8));
-    MInstruction *Addr = createInstruction<BinaryInstruction>(
-        false, OP_add, I64Type, BaseAddrInt, OffsetValue);
-    MInstruction *Ptr = createInstruction<ConversionInstruction>(
-        false, OP_inttoptr, U64PtrType, Addr);
-    createInstruction<StoreInstruction>(true, &Ctx.VoidType, Swapped, Ptr);
-  }
+  MInstruction *BasePtr = createInstruction<ConversionInstruction>(
+      false, OP_inttoptr, createVoidPtrType(), BaseAddrInt);
+  BasePtr = anchorDirectMemoryPointer(BasePtr);
+  storeU256ToBytes32Pointer(BasePtr, ValueParts);
 #ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   if (UsedLinearPrecheck) {
     ++MemStats.LinearU64AddrFastPathCount;
@@ -3648,6 +3636,10 @@ void EVMMirBuilder::handleMStore(Operand AddrComponents,
     if (CurBlockMemStats.Active) {
       ++CurBlockMemStats.PrecheckedMStoreOpCount;
     }
+  }
+  ++MemStats.DispBytes32MStoreCount;
+  if (CurBlockMemStats.Active) {
+    ++CurBlockMemStats.DispBytes32MStoreCount;
   }
 #endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
@@ -4280,6 +4272,10 @@ MInstruction *EVMMirBuilder::protectUnsafeValue(MInstruction *Value,
                                              ReusableVarIdx);
 }
 
+MInstruction *EVMMirBuilder::anchorDirectMemoryPointer(MInstruction *Ptr) {
+  return protectUnsafeValue(Ptr, Ptr->getType());
+}
+
 MInstruction *EVMMirBuilder::loadProtectedInstancePointer(int32_t Offset) {
   MPointerType *VoidPtrType = createVoidPtrType();
   MInstruction *Ptr = getInstanceElement(VoidPtrType, Offset);
@@ -4425,40 +4421,67 @@ EVMMirBuilder::convertBytes32ToU256Operand(const Operand &Bytes32Op) {
   // little-endian storage
   ZEN_ASSERT(Bytes32Op.getType() == EVMType::BYTES32);
 
+  MInstruction *Bytes32Ptr = Bytes32Op.getInstr();
+  if (Bytes32Ptr->getType()->isPointer()) {
+    return loadU256FromBytes32PointerDisplaced(Bytes32Ptr);
+  }
+
   U256Inst Result = {};
   MType *I64Type = EVMFrontendContext::getMIRTypeFromEVMType(EVMType::UINT64);
-  MInstruction *Bytes32Ptr = Bytes32Op.getInstr();
   MPointerType *U64PtrType = MPointerType::create(Ctx, Ctx.I64Type);
-
-  // Materialize the base address as an integer for pointer arithmetic
-  MInstruction *BaseAddr = Bytes32Ptr;
-  if (Bytes32Ptr->getType()->isPointer()) {
-    BaseAddr = createInstruction<ConversionInstruction>(
-        false, OP_ptrtoint, &Ctx.I64Type, Bytes32Ptr);
-  }
 
   auto ByteSwap64 = [&](MInstruction *Value) -> MInstruction * {
     return createInstruction<UnaryInstruction>(false, OP_bswap, I64Type, Value);
   };
 
   for (int Component = 0; Component < 4; ++Component) {
-    // Component 0 corresponds to bytes 24-31 (least significant 64 bits)
-    // Component 3 corresponds to bytes 0-7 (most significant 64 bits)
     int BaseOffset = (3 - Component) * 8;
-
     MInstruction *Offset =
         createIntConstInstruction(I64Type, static_cast<uint64_t>(BaseOffset));
     MInstruction *Addr = createInstruction<BinaryInstruction>(
-        false, OP_add, &Ctx.I64Type, BaseAddr, Offset);
+        false, OP_add, &Ctx.I64Type, Bytes32Ptr, Offset);
     MInstruction *ComponentPtr = createInstruction<ConversionInstruction>(
         false, OP_inttoptr, U64PtrType, Addr);
     MInstruction *RawValue =
         createInstruction<LoadInstruction>(false, I64Type, ComponentPtr);
+    Result[Component] = ByteSwap64(RawValue);
+  }
+
+  return Operand(Result, EVMType::UINT256);
+}
+
+typename EVMMirBuilder::Operand
+EVMMirBuilder::loadU256FromBytes32PointerDisplaced(MInstruction *Bytes32Ptr) {
+  U256Inst Result = {};
+  MType *I64Type = EVMFrontendContext::getMIRTypeFromEVMType(EVMType::UINT64);
+
+  auto ByteSwap64 = [&](MInstruction *Value) -> MInstruction * {
+    return createInstruction<UnaryInstruction>(false, OP_bswap, I64Type, Value);
+  };
+
+  for (int Component = 0; Component < 4; ++Component) {
+    MInstruction *RawValue = createInstruction<LoadInstruction>(
+        false, I64Type, Bytes32Ptr, 1, nullptr, (3 - Component) * 8);
 
     Result[Component] = ByteSwap64(RawValue);
   }
 
   return Operand(Result, EVMType::UINT256);
+}
+
+void EVMMirBuilder::storeU256ToBytes32Pointer(MInstruction *Bytes32Ptr,
+                                              const U256Inst &ValueParts) {
+  MType *I64Type = &Ctx.I64Type;
+  auto ByteSwap64 = [&](MInstruction *Value) -> MInstruction * {
+    return createInstruction<UnaryInstruction>(false, OP_bswap, I64Type, Value);
+  };
+
+  for (int Component = 0; Component < 4; ++Component) {
+    MInstruction *RawValue = ValueParts[3 - Component];
+    MInstruction *Swapped = ByteSwap64(RawValue);
+    createInstruction<StoreInstruction>(true, &Ctx.VoidType, Swapped,
+                                        Bytes32Ptr, Component * 8);
+  }
 }
 
 MInstruction *EVMMirBuilder::isU256GreaterOrEqual(const U256Inst &Value,
@@ -5040,6 +5063,8 @@ bool EVMMirBuilder::hasMemoryCompileStats() const {
          MemStats.MStore8ExpandCount != 0 || MemStats.MCopyExpandCount != 0 ||
          MemStats.BlockConstPrecheckCount != 0 ||
          MemStats.LinearU64AddrFastPathCount != 0 ||
+         MemStats.DispBytes32MLoadCount != 0 ||
+         MemStats.DispBytes32MStoreCount != 0 ||
          MemStats.ReloadMemorySizeCount != 0 ||
          MemStats.GetMemoryDataPointerCount != 0 ||
          MemStats.ExpandNeedExpandCFGCount != 0;
@@ -5082,6 +5107,7 @@ void EVMMirBuilder::dumpMemoryCompileStats() const {
       "mem_base_instance_loads=%llu mem_base_cache_uses=%llu "
       "linear_u64_addr_fast_ops=%llu linear_u64_mload_fast_ops=%llu "
       "linear_u64_mstore_fast_ops=%llu "
+      "disp_bytes32_mload_ops=%llu disp_bytes32_mstore_ops=%llu "
       "mstore_addr_value_alias_reuse=%llu "
       "need_expand_cfg=%llu",
       static_cast<unsigned long long>(MemStats.MLoadExpandCount),
@@ -5099,6 +5125,8 @@ void EVMMirBuilder::dumpMemoryCompileStats() const {
       static_cast<unsigned long long>(MemStats.LinearU64AddrFastPathCount),
       static_cast<unsigned long long>(MemStats.LinearU64MLoadFastPathCount),
       static_cast<unsigned long long>(MemStats.LinearU64MStoreFastPathCount),
+      static_cast<unsigned long long>(MemStats.DispBytes32MLoadCount),
+      static_cast<unsigned long long>(MemStats.DispBytes32MStoreCount),
       static_cast<unsigned long long>(MemStats.MStoreAddrValueAliasReuseCount),
       static_cast<unsigned long long>(MemStats.ExpandNeedExpandCFGCount));
 #endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
@@ -5252,6 +5280,7 @@ void EVMMirBuilder::endMemoryCompileBlock() {
       "prechecked_direct_ops=%llu prechecked_mload_ops=%llu "
       "prechecked_mstore_ops=%llu linear_u64_addr_fast_ops=%llu "
       "linear_u64_mload_fast_ops=%llu linear_u64_mstore_fast_ops=%llu "
+      "disp_bytes32_mload_ops=%llu disp_bytes32_mstore_ops=%llu "
       "mstore_addr_value_alias_reuse=%llu "
       "direct_only_candidate=%d",
       static_cast<unsigned long long>(CurBlockMemStats.BlockSeqId),
@@ -5290,6 +5319,8 @@ void EVMMirBuilder::endMemoryCompileBlock() {
           CurBlockMemStats.LinearU64MLoadFastPathCount),
       static_cast<unsigned long long>(
           CurBlockMemStats.LinearU64MStoreFastPathCount),
+      static_cast<unsigned long long>(CurBlockMemStats.DispBytes32MLoadCount),
+      static_cast<unsigned long long>(CurBlockMemStats.DispBytes32MStoreCount),
       static_cast<unsigned long long>(
           CurBlockMemStats.MStoreAddrValueAliasReuseCount),
       CurBlockMemStats.DirectMemoryOnlyCandidate ? 1 : 0);

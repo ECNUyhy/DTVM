@@ -849,12 +849,16 @@ private:
   // Split normalization for const and non-const U256.
   void normalizeOperandU64Const(Operand &Param, uint64_t *Value = nullptr);
   void normalizeOperandU64NonConst(Operand &Param, uint64_t *Value = nullptr);
+  MInstruction *anchorDirectMemoryPointer(MInstruction *Ptr);
   MInstruction *extractKnownU64LowOperand(const Operand &Opnd);
   void normalizeOffsetWithSize(Operand &Offset, Operand &Size);
 
   Operand convertSingleInstrToU256Operand(MInstruction *SingleInstr);
   Operand convertU256InstrToU256Operand(MInstruction *U256Instr);
   Operand convertBytes32ToU256Operand(const Operand &Bytes32Op);
+  Operand loadU256FromBytes32PointerDisplaced(MInstruction *Bytes32Ptr);
+  void storeU256ToBytes32Pointer(MInstruction *Bytes32Ptr,
+                                 const U256Inst &ValueParts);
 
   // Helper functions for operand conversion
   template <size_t N>
@@ -917,6 +921,8 @@ private:
     uint64_t LinearU64AddrFastPathCount = 0;
     uint64_t LinearU64MLoadFastPathCount = 0;
     uint64_t LinearU64MStoreFastPathCount = 0;
+    uint64_t DispBytes32MLoadCount = 0;
+    uint64_t DispBytes32MStoreCount = 0;
 
     uint64_t ReloadMemorySizeCount = 0;
     uint64_t GetMemoryDataPointerCount = 0;
@@ -968,6 +974,8 @@ private:
     uint64_t LinearU64AddrFastPathCount = 0;
     uint64_t LinearU64MLoadFastPathCount = 0;
     uint64_t LinearU64MStoreFastPathCount = 0;
+    uint64_t DispBytes32MLoadCount = 0;
+    uint64_t DispBytes32MStoreCount = 0;
   };
   void noteBlockMemoryEventPC(uint64_t PC);
   bool hasCurrentMemoryBlockStats() const;
