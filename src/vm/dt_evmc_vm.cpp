@@ -28,6 +28,21 @@ namespace {
 using namespace zen::runtime;
 using namespace zen::common;
 
+// RAII helper for temporarily changing runtime configuration
+class ScopedConfig {
+public:
+  ScopedConfig(Runtime *Runtime, const RuntimeConfig &NewConfig)
+      : RT(Runtime), PreviousConfig(Runtime->getConfig()) {
+    RT->setConfig(NewConfig);
+  }
+
+  ~ScopedConfig() { RT->setConfig(PreviousConfig); }
+
+private:
+  Runtime *RT;
+  RuntimeConfig PreviousConfig;
+};
+
 // Forward declaration for InstanceGuard
 struct DTVM;
 
@@ -317,11 +332,33 @@ bool shouldUsePersistentModuleCache(const evmc_message *Msg) {
          Msg->kind != EVMC_CREATE2;
 }
 
+bool shouldRetryModuleLoadWithFastRA(const DTVM *VM, const Error &Err) {
+  return VM->Config.Mode == RunMode::MultipassMode &&
+         !VM->Config.DisableMultipassGreedyRA &&
+         Err.getPhase() == ErrorPhase::Compilation &&
+         Err.getSubphase() == ErrorSubphase::RegAlloc;
+}
+
+zen::common::MayBe<EVMModule *> loadEVMModuleWithRegAllocRetry(
+    DTVM *VM, const std::string &ModName, const uint8_t *Code, size_t CodeSize,
+    evmc_revision Rev, EVMMemorySpecializationProfile MemoryProfile = {}) {
+  auto ModRet =
+      VM->RT->loadEVMModule(ModName, Code, CodeSize, Rev, MemoryProfile);
+  if (ModRet || !shouldRetryModuleLoadWithFastRA(VM, ModRet.getError())) {
+    return ModRet;
+  }
+
+  RuntimeConfig RetryConfig = VM->Config;
+  RetryConfig.DisableMultipassGreedyRA = true;
+  ScopedConfig Retry(VM->RT.get(), RetryConfig);
+  return VM->RT->loadEVMModule(ModName, Code, CodeSize, Rev, MemoryProfile);
+}
+
 EVMModule *loadTransientModule(DTVM *VM, const uint8_t *Code, size_t CodeSize,
                                evmc_revision Rev) {
   std::string ModName = "tmp_mod_" + std::to_string(VM->ModCounter++);
-  auto ModRet = VM->RT->loadEVMModule(ModName, Code, CodeSize, Rev,
-                                      EVMMemorySpecializationProfile{});
+  auto ModRet = loadEVMModuleWithRegAllocRetry(
+      VM, ModName, Code, CodeSize, Rev, EVMMemorySpecializationProfile{});
   if (!ModRet)
     return nullptr;
   return *ModRet;
@@ -387,7 +424,8 @@ EVMModule *findModuleCached(DTVM *VM, const uint8_t *Code, size_t CodeSize,
     }
 
     std::string ModName = "mod_" + std::to_string(VM->ModCounter++);
-    auto ModRet = VM->RT->loadEVMModule(ModName, Code, CodeSize, Rev, Profile);
+    auto ModRet = loadEVMModuleWithRegAllocRetry(VM, ModName, Code, CodeSize,
+                                                 Rev, Profile);
     if (!ModRet)
       return nullptr;
     Mod = *ModRet;
