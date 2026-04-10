@@ -79,22 +79,59 @@ static constexpr size_t MAX_MODULE_CACHE_SIZE = 4096;
 struct CodeAddrRevKey {
   evmc_address Addr;
   evmc_revision Rev;
+  zen::runtime::EVMMemorySpecializationProfile MemoryProfile = {};
 };
 
 struct CodeAddrRevHash {
   size_t operator()(const CodeAddrRevKey &K) const {
     uint64_t H;
     std::memcpy(&H, K.Addr.bytes + 12, sizeof(H));
-    return H ^ (static_cast<size_t>(K.Rev) * 2654435761u);
+    return H ^ (static_cast<size_t>(K.Rev) * 2654435761u) ^
+           (static_cast<size_t>(K.MemoryProfile.SkipLeadingZeroLimbStores)
+            << 20);
   }
 };
 
 struct CodeAddrRevEqual {
   bool operator()(const CodeAddrRevKey &A, const CodeAddrRevKey &B) const {
     return A.Rev == B.Rev &&
+           A.MemoryProfile.SkipLeadingZeroLimbStores ==
+               B.MemoryProfile.SkipLeadingZeroLimbStores &&
            std::memcmp(A.Addr.bytes, B.Addr.bytes, sizeof(A.Addr.bytes)) == 0;
   }
 };
+
+zen::runtime::EVMMemorySpecializationProfile
+deriveMemorySpecializationProfile(const evmc_message *Msg) {
+  zen::runtime::EVMMemorySpecializationProfile Profile;
+  if (!Msg) {
+    return Profile;
+  }
+
+  uint8_t Word[32] = {};
+  const size_t CopySize = std::min<size_t>(Msg->input_size, sizeof(Word));
+  if (CopySize != 0 && Msg->input_data != nullptr) {
+    std::memcpy(Word, Msg->input_data, CopySize);
+  }
+
+  for (size_t I = 0; I < 24; ++I) {
+    if (Word[I] != 0) {
+      return Profile;
+    }
+  }
+
+  uint64_t Low64 = 0;
+  for (size_t I = 24; I < 32; ++I) {
+    Low64 = (Low64 << 8) | static_cast<uint64_t>(Word[I]);
+  }
+
+  if (Low64 <= 8) {
+    Profile.SkipLeadingZeroLimbStores = 2;
+  } else if (Low64 <= 16) {
+    Profile.SkipLeadingZeroLimbStores = 1;
+  }
+  return Profile;
+}
 
 /// Validate that the cached module's code matches the provided code.
 /// Note: This relies on the host guaranteeing that deployed code at a given
@@ -283,7 +320,8 @@ bool shouldUsePersistentModuleCache(const evmc_message *Msg) {
 EVMModule *loadTransientModule(DTVM *VM, const uint8_t *Code, size_t CodeSize,
                                evmc_revision Rev) {
   std::string ModName = "tmp_mod_" + std::to_string(VM->ModCounter++);
-  auto ModRet = VM->RT->loadEVMModule(ModName, Code, CodeSize, Rev);
+  auto ModRet = VM->RT->loadEVMModule(ModName, Code, CodeSize, Rev,
+                                      EVMMemorySpecializationProfile{});
   if (!ModRet)
     return nullptr;
   return *ModRet;
@@ -302,6 +340,8 @@ EVMModule *findModuleCached(DTVM *VM, const uint8_t *Code, size_t CodeSize,
   }
 
   IsTransient = false;
+  const EVMMemorySpecializationProfile Profile =
+      deriveMemorySpecializationProfile(Msg);
 
   // L0 disabled: pointer comparison is unsafe when callers reuse addresses
   // for different bytecode (e.g. test frameworks, repeated allocations).
@@ -310,7 +350,7 @@ EVMModule *findModuleCached(DTVM *VM, const uint8_t *Code, size_t CodeSize,
   EVMModule *Mod = nullptr;
 
   // L1: Address-based LRU cache lookup
-  CodeAddrRevKey AddrKey{Msg->code_address, Rev};
+  CodeAddrRevKey AddrKey{Msg->code_address, Rev, Profile};
   auto It = VM->AddrCache.find(AddrKey);
   if (It != VM->AddrCache.end() &&
       validateCodeMatch(Code, CodeSize, It->second.first)) {
@@ -347,7 +387,7 @@ EVMModule *findModuleCached(DTVM *VM, const uint8_t *Code, size_t CodeSize,
     }
 
     std::string ModName = "mod_" + std::to_string(VM->ModCounter++);
-    auto ModRet = VM->RT->loadEVMModule(ModName, Code, CodeSize, Rev);
+    auto ModRet = VM->RT->loadEVMModule(ModName, Code, CodeSize, Rev, Profile);
     if (!ModRet)
       return nullptr;
     Mod = *ModRet;

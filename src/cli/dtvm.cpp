@@ -11,6 +11,8 @@
 #include "tests/evm_test_host.hpp"
 #include "utils/evm.h"
 #endif // ZEN_ENABLE_EVM
+#include <algorithm>
+#include <cstring>
 #include <unistd.h>
 
 #ifdef ZEN_ENABLE_BUILTIN_WASI
@@ -109,6 +111,35 @@ static evmc_message createEvmMessage(evmc::MockedHost &Host,
   return Msg;
 }
 
+static zen::runtime::EVMMemorySpecializationProfile
+deriveEVMMemorySpecializationProfileFromCalldata(
+    const std::vector<uint8_t> &Calldata) {
+  zen::runtime::EVMMemorySpecializationProfile Profile;
+  uint8_t Word[32] = {};
+  const size_t CopySize = std::min(Calldata.size(), sizeof(Word));
+  if (CopySize != 0) {
+    std::memcpy(Word, Calldata.data(), CopySize);
+  }
+
+  for (size_t I = 0; I < 24; ++I) {
+    if (Word[I] != 0) {
+      return Profile;
+    }
+  }
+
+  uint64_t Low64 = 0;
+  for (size_t I = 24; I < 32; ++I) {
+    Low64 = (Low64 << 8) | static_cast<uint64_t>(Word[I]);
+  }
+
+  if (Low64 <= 8) {
+    Profile.SkipLeadingZeroLimbStores = 2;
+  } else if (Low64 <= 16) {
+    Profile.SkipLeadingZeroLimbStores = 1;
+  }
+  return Profile;
+}
+
 static bool runEVMBenchmark(const std::string &Filename,
                             uint32_t NumExtraCompilations,
                             uint32_t NumExtraExecutions, Runtime *RT,
@@ -126,8 +157,11 @@ static bool runEVMBenchmark(const std::string &Filename,
 
   for (uint32_t I = 0; I < NumExtraCompilations; ++I) {
     std::string NewEvmName = Filename + std::to_string(I);
+    const zen::runtime::EVMMemorySpecializationProfile Profile =
+        deriveEVMMemorySpecializationProfileFromCalldata(MsgConfig.Calldata);
     MayBe<EVMModule *> TestModRet =
-        RT->loadEVMModule(NewEvmName, Bytecode.data(), Bytecode.size());
+        RT->loadEVMModule(NewEvmName, Bytecode.data(), Bytecode.size(),
+                          zen::evm::DEFAULT_REVISION, Profile);
     ZEN_ASSERT(TestModRet);
     RT->unloadEVMModule(*TestModRet);
   }
@@ -323,7 +357,19 @@ int main(int argc, char *argv[]) {
     // Set runtime for ZenMockedEVMHost
     MockedHost.setRuntime(RT.get());
 
-    MayBe<EVMModule *> ModRet = RT->loadEVMModule(Filename, EvmRevision);
+    static thread_local std::vector<uint8_t> CalldataBytes;
+    CalldataBytes.clear();
+    if (!Calldata.empty()) {
+      auto Bytes = zen::utils::fromHex(Calldata);
+      if (Bytes.has_value()) {
+        CalldataBytes = std::move(*Bytes);
+      }
+    }
+
+    const zen::runtime::EVMMemorySpecializationProfile MemoryProfile =
+        deriveEVMMemorySpecializationProfileFromCalldata(CalldataBytes);
+    MayBe<EVMModule *> ModRet =
+        RT->loadEVMModule(Filename, EvmRevision, MemoryProfile);
     if (!ModRet) {
       const Error &Err = ModRet.getError();
       ZEN_ASSERT(!Err.isEmpty());
@@ -362,15 +408,6 @@ int main(int argc, char *argv[]) {
 
       Bytecode.assign((std::istreambuf_iterator<char>(File)),
                       std::istreambuf_iterator<char>());
-    }
-
-    static thread_local std::vector<uint8_t> CalldataBytes;
-    CalldataBytes.clear();
-    if (!Calldata.empty()) {
-      auto Bytes = zen::utils::fromHex(Calldata);
-      if (Bytes.has_value()) {
-        CalldataBytes = std::move(*Bytes);
-      }
     }
 
     EVMMessageConfig MsgConfig{.Kind = MsgKind,
