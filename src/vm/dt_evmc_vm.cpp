@@ -99,53 +99,36 @@ struct CodeAddrRevKey {
 
 struct CodeAddrRevHash {
   size_t operator()(const CodeAddrRevKey &K) const {
+    const auto CodegenKey =
+        getEVMMemorySpecializationCodegenKey(K.MemoryProfile);
     uint64_t H;
     std::memcpy(&H, K.Addr.bytes + 12, sizeof(H));
     return H ^ (static_cast<size_t>(K.Rev) * 2654435761u) ^
-           (static_cast<size_t>(K.MemoryProfile.SkipLeadingZeroLimbStores)
-            << 20);
+           (static_cast<size_t>(CodegenKey.SkipLeadingZeroLimbStores) << 20);
   }
 };
 
 struct CodeAddrRevEqual {
   bool operator()(const CodeAddrRevKey &A, const CodeAddrRevKey &B) const {
+    // Keep the cache-key dependency explicit: today only the codegen-relevant
+    // specialization fields participate in module identity. If additional
+    // EVMMemorySpecializationProfile fields start affecting lowering or JIT
+    // codegen, update getEVMMemorySpecializationCodegenKey() accordingly.
+    const auto ACodegenKey =
+        getEVMMemorySpecializationCodegenKey(A.MemoryProfile);
+    const auto BCodegenKey =
+        getEVMMemorySpecializationCodegenKey(B.MemoryProfile);
     return A.Rev == B.Rev &&
-           A.MemoryProfile.SkipLeadingZeroLimbStores ==
-               B.MemoryProfile.SkipLeadingZeroLimbStores &&
+           ACodegenKey.SkipLeadingZeroLimbStores ==
+               BCodegenKey.SkipLeadingZeroLimbStores &&
            std::memcmp(A.Addr.bytes, B.Addr.bytes, sizeof(A.Addr.bytes)) == 0;
   }
 };
 
 zen::runtime::EVMMemorySpecializationProfile
 deriveMemorySpecializationProfile(const evmc_message *Msg) {
-  zen::runtime::EVMMemorySpecializationProfile Profile;
-  if (!Msg) {
-    return Profile;
-  }
-
-  uint8_t Word[32] = {};
-  const size_t CopySize = std::min<size_t>(Msg->input_size, sizeof(Word));
-  if (CopySize != 0 && Msg->input_data != nullptr) {
-    std::memcpy(Word, Msg->input_data, CopySize);
-  }
-
-  for (size_t I = 0; I < 24; ++I) {
-    if (Word[I] != 0) {
-      return Profile;
-    }
-  }
-
-  uint64_t Low64 = 0;
-  for (size_t I = 24; I < 32; ++I) {
-    Low64 = (Low64 << 8) | static_cast<uint64_t>(Word[I]);
-  }
-
-  if (Low64 <= 8) {
-    Profile.SkipLeadingZeroLimbStores = 2;
-  } else if (Low64 <= 16) {
-    Profile.SkipLeadingZeroLimbStores = 1;
-  }
-  return Profile;
+  return deriveEVMMemorySpecializationProfileFromCallData(
+      Msg ? Msg->input_data : nullptr, Msg ? Msg->input_size : 0);
 }
 
 /// Validate that the cached module's code matches the provided code.

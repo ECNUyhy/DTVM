@@ -11,8 +11,6 @@
 #include "tests/evm_test_host.hpp"
 #include "utils/evm.h"
 #endif // ZEN_ENABLE_EVM
-#include <algorithm>
-#include <cstring>
 #include <unistd.h>
 
 #ifdef ZEN_ENABLE_BUILTIN_WASI
@@ -114,30 +112,8 @@ static evmc_message createEvmMessage(evmc::MockedHost &Host,
 static zen::runtime::EVMMemorySpecializationProfile
 deriveEVMMemorySpecializationProfileFromCalldata(
     const std::vector<uint8_t> &Calldata) {
-  zen::runtime::EVMMemorySpecializationProfile Profile;
-  uint8_t Word[32] = {};
-  const size_t CopySize = std::min(Calldata.size(), sizeof(Word));
-  if (CopySize != 0) {
-    std::memcpy(Word, Calldata.data(), CopySize);
-  }
-
-  for (size_t I = 0; I < 24; ++I) {
-    if (Word[I] != 0) {
-      return Profile;
-    }
-  }
-
-  uint64_t Low64 = 0;
-  for (size_t I = 24; I < 32; ++I) {
-    Low64 = (Low64 << 8) | static_cast<uint64_t>(Word[I]);
-  }
-
-  if (Low64 <= 8) {
-    Profile.SkipLeadingZeroLimbStores = 2;
-  } else if (Low64 <= 16) {
-    Profile.SkipLeadingZeroLimbStores = 1;
-  }
-  return Profile;
+  return deriveEVMMemorySpecializationProfileFromCallData(Calldata.data(),
+                                                          Calldata.size());
 }
 
 static bool runEVMBenchmark(const std::string &Filename,
