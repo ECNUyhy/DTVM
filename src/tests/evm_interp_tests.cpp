@@ -149,7 +149,8 @@ struct EVMExecutionResult {
 EVMExecutionResult executeEvmBytecode(const std::string &ModuleName,
                                       const std::vector<uint8_t> &Bytecode,
                                       common::RunMode Mode,
-                                      std::vector<uint8_t> CallData = {}) {
+                                      std::vector<uint8_t> CallData = {},
+                                      uint64_t ExecutionGasLimitOverride = 0) {
   EVMExecutionResult Empty;
 
   RuntimeConfig Config;
@@ -177,9 +178,12 @@ EVMExecutionResult executeEvmBytecode(const std::string &ModuleName,
     return Empty;
   }
 
-  uint64_t GasLimit = 0xFFFF'FFFF'FFFF;
-  const uint64_t IntrinsicGas = zen::evm::BASIC_EXECUTION_COST;
-  const uint64_t ExecutionGasLimit = GasLimit - IntrinsicGas;
+  uint64_t ExecutionGasLimit = ExecutionGasLimitOverride;
+  if (ExecutionGasLimit == 0) {
+    uint64_t GasLimit = 0xFFFF'FFFF'FFFF;
+    const uint64_t IntrinsicGas = zen::evm::BASIC_EXECUTION_COST;
+    ExecutionGasLimit = GasLimit - IntrinsicGas;
+  }
 
   auto InstRet = Iso->createEVMInstance(*Mod, ExecutionGasLimit);
   EXPECT_TRUE(InstRet) << "Failed to create instance: " << ModuleName;
@@ -266,6 +270,27 @@ void expectMemoryLinearMstoreOverlapResult(uint64_t Stride,
 #endif
   EXPECT_EQ(Exec.Status, EVMC_SUCCESS);
   EXPECT_EQ(Exec.OutputHex, ExpectedHex);
+}
+
+void expectMultipassJitModuleLoads(const std::string &ModuleName,
+                                   const std::vector<uint8_t> &Bytecode) {
+  RuntimeConfig Config;
+  Config.Mode = common::RunMode::MultipassMode;
+
+  auto MockedHost = std::make_unique<zen::evm::ZenMockedEVMHost>();
+  MockedHost->tx_context.tx_origin = zen::evm::DEFAULT_DEPLOYER_ADDRESS;
+  auto RT = Runtime::newEVMRuntime(Config, MockedHost.get());
+  ASSERT_TRUE(RT != nullptr) << "Failed to create runtime";
+
+  MockedHost->setRuntime(RT.get());
+
+  auto ModRet = RT->loadEVMModule(ModuleName, Bytecode.data(), Bytecode.size());
+  ASSERT_TRUE(ModRet) << "Failed to load module: " << ModuleName;
+
+#ifdef ZEN_ENABLE_JIT
+  EVMModule *Mod = *ModRet;
+  EXPECT_TRUE(Mod->getJITCode() != nullptr && Mod->getJITCodeSize() > 0);
+#endif
 }
 #endif
 
@@ -444,5 +469,47 @@ TEST(EVMMultipassLinearPrecheckTest,
   expectMemoryLinearMstoreOverlapResult(
       0x18, "0000000000000000000000000000000000000000000000000000000000000000"
             "0000000000000000000000000000000000000000000000000000000000000060");
+}
+
+TEST(EVMMultipassDisplacedBytes32Test,
+     MemoryConstMloadAboveI32DisplacementLimitCompiles) {
+  const std::vector<uint8_t> Bytecode = {0x63, 0x7f, 0xff, 0xff,
+                                         0xe8, 0x51, 0x00};
+  expectMultipassJitModuleLoads("memory_const_mload_i32_disp_limit", Bytecode);
+}
+
+TEST(EVMMultipassDisplacedBytes32Test,
+     MemoryConstMstoreAboveI32DisplacementLimitCompiles) {
+  const std::vector<uint8_t> Bytecode = {0x60, 0x01, 0x63, 0x7f, 0xff,
+                                         0xff, 0xe8, 0x52, 0x00};
+  expectMultipassJitModuleLoads("memory_const_mstore_i32_disp_limit", Bytecode);
+}
+
+TEST(EVMMultipassDisplacedBytes32Test,
+     MemoryConstMloadAboveI32DisplacementLimitReturnsOutOfGas) {
+  const std::vector<uint8_t> Bytecode = {0x63, 0x7f, 0xff, 0xff,
+                                         0xe8, 0x51, 0x00};
+  auto Exec =
+      executeEvmBytecode("memory_const_mload_i32_disp_limit_oog", Bytecode,
+                         common::RunMode::MultipassMode, {}, 1'000'000);
+
+#ifdef ZEN_ENABLE_JIT
+  EXPECT_TRUE(Exec.JITCompiled);
+#endif
+  EXPECT_EQ(Exec.Status, EVMC_OUT_OF_GAS);
+}
+
+TEST(EVMMultipassDisplacedBytes32Test,
+     MemoryConstMstoreAboveI32DisplacementLimitReturnsOutOfGas) {
+  const std::vector<uint8_t> Bytecode = {0x60, 0x01, 0x63, 0x7f, 0xff,
+                                         0xff, 0xe8, 0x52, 0x00};
+  auto Exec =
+      executeEvmBytecode("memory_const_mstore_i32_disp_limit_oog", Bytecode,
+                         common::RunMode::MultipassMode, {}, 1'000'000);
+
+#ifdef ZEN_ENABLE_JIT
+  EXPECT_TRUE(Exec.JITCompiled);
+#endif
+  EXPECT_EQ(Exec.Status, EVMC_OUT_OF_GAS);
 }
 #endif
