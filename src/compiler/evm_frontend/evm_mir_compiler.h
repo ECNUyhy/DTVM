@@ -1178,6 +1178,20 @@ private:
     uint64_t MemoryBaseCacheUseCount = 0;
 
     uint64_t ExpandNeedExpandCFGCount = 0;
+
+    uint64_t SmallFrameCandidateTotal = 0;
+    uint64_t SmallFramePrecheckedTotal = 0;
+    uint64_t SmallFrameOffsetConstTotal = 0;
+    uint64_t SmallFrameOffsetKnownU64Total = 0;
+    uint64_t SmallFrameMLoadCandidate = 0;
+    uint64_t SmallFrameMStoreCandidate = 0;
+    uint64_t SmallFrameMStore8Candidate = 0;
+    uint64_t SmallFrameFallbackUnknownOffset = 0;
+    uint64_t SmallFrameFallbackOver128 = 0;
+    uint64_t SmallFrameFallbackNoPrecheck = 0;
+    uint64_t SmallFrameFallbackOverflow = 0;
+    uint64_t SmallFrameFallbackDynamicSize = 0;
+    uint64_t SmallFrameFallbackGasOrMemorySemanticsUncertain = 0;
   };
   bool hasMemoryCompileStats() const;
   MemoryCompileStats MemStats;
@@ -1230,6 +1244,15 @@ private:
     uint64_t DispBytes32MStoreCount = 0;
     uint64_t MStoreZeroLimbStoreCount = 0;
     uint64_t MStoreOverlapElidedLimbCount = 0;
+
+    uint64_t SmallFrameCandidateCount = 0;
+    uint64_t SmallFramePrecheckedCount = 0;
+    uint64_t SmallFrameFallbackNoPrecheckCount = 0;
+    uint64_t SmallFrameFallbackDynamicSizeCount = 0;
+    uint64_t SmallFrameFallbackOver128Count = 0;
+    uint64_t SmallFrameNoPrecheckMLoadCount = 0;
+    uint64_t SmallFrameNoPrecheckMStoreCount = 0;
+    uint64_t SmallFrameNoPrecheckMStore8Count = 0;
   };
   void noteBlockMemoryEventPC(uint64_t PC);
   bool hasCurrentMemoryBlockStats() const;
@@ -1255,6 +1278,10 @@ private:
   bool tryConsumeConstBlockMemoryPrecheck();
   bool tryConsumeLinearBlockMemoryPrecheck(MInstruction *FirstAddr,
                                            MInstruction *OrderingDep);
+  enum class SmallFrameMemoryOp : uint8_t { MLoad, MStore, MStore8 };
+  void noteSmallFrameMemoryOp(SmallFrameMemoryOp Op, bool OffsetWasConst,
+                              uint64_t ConstOffset, bool OffsetKnownU64,
+                              uint64_t AccessSize, bool UsedSharedPrecheck);
   uint64_t NextMemoryBlockSeqId = 0;
   MemoryBlockCompileStats CurBlockMemStats;
   MemoryBlockConstPrecheckPlan CurBlockConstPrecheckPlan;

@@ -4129,10 +4129,13 @@ EVMMirBuilder::handleMLoad(Operand AddrComponents) {
 #endif
   MType *I64Type = &Ctx.I64Type;
   uint64_t ConstAddr = 0;
+  const bool OffsetWasConst = AddrComponents.isConstU64();
+  const uint64_t OriginalConstOffset =
+      OffsetWasConst ? AddrComponents.getConstValue()[0] : 0;
+  bool OffsetKnownU64 = OffsetWasConst;
   const bool CanUseConstBaseDispPath =
-      AddrComponents.isConstU64() &&
-      (ConstAddr = AddrComponents.getConstValue()[0]) <=
-          static_cast<uint64_t>(INT32_MAX - 24);
+      OffsetWasConst && (ConstAddr = OriginalConstOffset) <=
+                            static_cast<uint64_t>(INT32_MAX - 24);
 
   const bool CanUseLinearU64AddrFastPath =
       CurBlockLinearPrecheckPlan.Active &&
@@ -4142,6 +4145,7 @@ EVMMirBuilder::handleMLoad(Operand AddrComponents) {
   if (CanUseLinearU64AddrFastPath) {
     Offset = extractKnownU64LowOperand(AddrComponents);
     UsedLinearPrecheck = tryConsumeLinearBlockMemoryPrecheck(Offset, nullptr);
+    OffsetKnownU64 = OffsetKnownU64 || UsedLinearPrecheck;
   }
   if (!UsedLinearPrecheck) {
     normalizeOperandU64(AddrComponents);
@@ -4149,6 +4153,9 @@ EVMMirBuilder::handleMLoad(Operand AddrComponents) {
   }
   bool UsedSharedPrecheck =
       UsedLinearPrecheck || tryConsumeConstBlockMemoryPrecheck();
+  noteSmallFrameMemoryOp(SmallFrameMemoryOp::MLoad, OffsetWasConst,
+                         OriginalConstOffset, OffsetKnownU64, 32,
+                         UsedSharedPrecheck);
   if (!UsedSharedPrecheck) {
     MInstruction *SizeConst = createIntConstInstruction(I64Type, 32);
     MInstruction *RequiredSize = createInstruction<BinaryInstruction>(
@@ -4230,10 +4237,13 @@ void EVMMirBuilder::handleMStore(Operand AddrComponents,
 #endif
   MType *I64Type = &Ctx.I64Type;
   uint64_t ConstAddr = 0;
+  const bool OffsetWasConst = AddrComponents.isConstU64();
+  const uint64_t OriginalConstOffset =
+      OffsetWasConst ? AddrComponents.getConstValue()[0] : 0;
+  bool OffsetKnownU64 = OffsetWasConst;
   const bool CanUseConstBaseDispPath =
-      AddrComponents.isConstU64() &&
-      (ConstAddr = AddrComponents.getConstValue()[0]) <=
-          static_cast<uint64_t>(INT32_MAX - 24);
+      OffsetWasConst && (ConstAddr = OriginalConstOffset) <=
+                            static_cast<uint64_t>(INT32_MAX - 24);
 
   U256Inst ValueParts = {};
   bool HasValueParts = false;
@@ -4249,6 +4259,7 @@ void EVMMirBuilder::handleMStore(Operand AddrComponents,
   if (CanUseLinearU64AddrFastPath) {
     Offset = extractKnownU64LowOperand(AddrComponents);
     UsedLinearPrecheck = tryConsumeLinearBlockMemoryPrecheck(Offset, nullptr);
+    OffsetKnownU64 = OffsetKnownU64 || UsedLinearPrecheck;
   }
   if (!UsedLinearPrecheck) {
     normalizeOperandU64(AddrComponents);
@@ -4256,6 +4267,9 @@ void EVMMirBuilder::handleMStore(Operand AddrComponents,
   }
   bool UsedSharedPrecheck =
       UsedLinearPrecheck || tryConsumeConstBlockMemoryPrecheck();
+  noteSmallFrameMemoryOp(SmallFrameMemoryOp::MStore, OffsetWasConst,
+                         OriginalConstOffset, OffsetKnownU64, 32,
+                         UsedSharedPrecheck);
   if (!UsedSharedPrecheck) {
     ValueParts = extractU256Operand(ValueComponents);
     HasValueParts = true;
@@ -4364,10 +4378,13 @@ void EVMMirBuilder::handleMStore(Operand AddrComponents,
 void EVMMirBuilder::handleMStore8(Operand AddrComponents,
                                   Operand ValueComponents) {
   uint64_t ConstAddr = 0;
+  const bool OffsetWasConst = AddrComponents.isConstU64();
+  const uint64_t OriginalConstOffset =
+      OffsetWasConst ? AddrComponents.getConstValue()[0] : 0;
+  const bool OffsetKnownU64 = OffsetWasConst;
   const bool CanUseConstBaseDispPath =
-      AddrComponents.isConstU64() &&
-      (ConstAddr = AddrComponents.getConstValue()[0]) <=
-          static_cast<uint64_t>(INT32_MAX);
+      OffsetWasConst &&
+      (ConstAddr = OriginalConstOffset) <= static_cast<uint64_t>(INT32_MAX);
   normalizeOperandU64(AddrComponents);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemory();
@@ -4391,6 +4408,9 @@ void EVMMirBuilder::handleMStore8(Operand AddrComponents,
       false, CmpInstruction::Predicate::ICMP_ULT, I64Type, RequiredSize,
       Offset);
   bool UsedSharedPrecheck = tryConsumeConstBlockMemoryPrecheck();
+  noteSmallFrameMemoryOp(SmallFrameMemoryOp::MStore8, OffsetWasConst,
+                         OriginalConstOffset, OffsetKnownU64, 1,
+                         UsedSharedPrecheck);
   if (!UsedSharedPrecheck) {
 #ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
     ++MemStats.MStore8ExpandCount;
@@ -5952,7 +5972,16 @@ bool EVMMirBuilder::hasMemoryCompileStats() const {
          MemStats.MStoreOverlapElidedLimbCount != 0 ||
          MemStats.ReloadMemorySizeCount != 0 ||
          MemStats.GetMemoryDataPointerCount != 0 ||
-         MemStats.ExpandNeedExpandCFGCount != 0;
+         MemStats.ExpandNeedExpandCFGCount != 0 ||
+         MemStats.SmallFrameCandidateTotal != 0 ||
+         MemStats.SmallFramePrecheckedTotal != 0 ||
+         MemStats.SmallFrameOffsetConstTotal != 0 ||
+         MemStats.SmallFrameOffsetKnownU64Total != 0 ||
+         MemStats.SmallFrameFallbackUnknownOffset != 0 ||
+         MemStats.SmallFrameFallbackOver128 != 0 ||
+         MemStats.SmallFrameFallbackNoPrecheck != 0 ||
+         MemStats.SmallFrameFallbackOverflow != 0 ||
+         MemStats.SmallFrameFallbackDynamicSize != 0;
 }
 
 void EVMMirBuilder::noteBlockMemoryEventPC(uint64_t PC) {
@@ -5975,6 +6004,102 @@ bool EVMMirBuilder::hasCurrentMemoryBlockStats() const {
   return CurBlockMemStats.Active && CurBlockMemStats.HasMemoryEvent;
 #else
   return false;
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
+}
+
+void EVMMirBuilder::noteSmallFrameMemoryOp(
+    SmallFrameMemoryOp Op, bool OffsetWasConst, uint64_t ConstOffset,
+    bool OffsetKnownU64, uint64_t AccessSize, bool UsedSharedPrecheck) {
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
+  constexpr uint64_t SmallFrameLimit = 128;
+
+  if (OffsetWasConst) {
+    ++MemStats.SmallFrameOffsetConstTotal;
+  } else if (OffsetKnownU64) {
+    ++MemStats.SmallFrameOffsetKnownU64Total;
+  }
+
+  if (AccessSize == 0 || AccessSize > SmallFrameLimit) {
+    ++MemStats.SmallFrameFallbackDynamicSize;
+    if (CurBlockMemStats.Active) {
+      ++CurBlockMemStats.SmallFrameFallbackDynamicSizeCount;
+    }
+    return;
+  }
+
+  if (!OffsetWasConst) {
+    if (OffsetKnownU64) {
+      ++MemStats.SmallFrameFallbackDynamicSize;
+      if (CurBlockMemStats.Active) {
+        ++CurBlockMemStats.SmallFrameFallbackDynamicSizeCount;
+      }
+    } else {
+      ++MemStats.SmallFrameFallbackUnknownOffset;
+    }
+    return;
+  }
+
+  if (ConstOffset > (~uint64_t(0) - AccessSize)) {
+    ++MemStats.SmallFrameFallbackOverflow;
+    return;
+  }
+
+  const uint64_t AccessEnd = ConstOffset + AccessSize;
+  if (AccessEnd > SmallFrameLimit) {
+    ++MemStats.SmallFrameFallbackOver128;
+    if (CurBlockMemStats.Active) {
+      ++CurBlockMemStats.SmallFrameFallbackOver128Count;
+    }
+    return;
+  }
+
+  ++MemStats.SmallFrameCandidateTotal;
+  if (CurBlockMemStats.Active) {
+    ++CurBlockMemStats.SmallFrameCandidateCount;
+  }
+
+  switch (Op) {
+  case SmallFrameMemoryOp::MLoad:
+    ++MemStats.SmallFrameMLoadCandidate;
+    break;
+  case SmallFrameMemoryOp::MStore:
+    ++MemStats.SmallFrameMStoreCandidate;
+    break;
+  case SmallFrameMemoryOp::MStore8:
+    ++MemStats.SmallFrameMStore8Candidate;
+    break;
+  }
+
+  if (UsedSharedPrecheck) {
+    ++MemStats.SmallFramePrecheckedTotal;
+    if (CurBlockMemStats.Active) {
+      ++CurBlockMemStats.SmallFramePrecheckedCount;
+    }
+    return;
+  }
+
+  ++MemStats.SmallFrameFallbackNoPrecheck;
+  if (CurBlockMemStats.Active) {
+    ++CurBlockMemStats.SmallFrameFallbackNoPrecheckCount;
+    switch (Op) {
+    case SmallFrameMemoryOp::MLoad:
+      ++CurBlockMemStats.SmallFrameNoPrecheckMLoadCount;
+      break;
+    case SmallFrameMemoryOp::MStore:
+      ++CurBlockMemStats.SmallFrameNoPrecheckMStoreCount;
+      break;
+    case SmallFrameMemoryOp::MStore8:
+      ++CurBlockMemStats.SmallFrameNoPrecheckMStore8Count;
+      break;
+    }
+  }
+#else
+  (void)Op;
+  (void)OffsetWasConst;
+  (void)ConstOffset;
+  (void)OffsetKnownU64;
+  (void)AccessSize;
+  (void)UsedSharedPrecheck;
 #endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 }
 
@@ -6023,6 +6148,35 @@ void EVMMirBuilder::dumpMemoryCompileStats() const {
       static_cast<unsigned long long>(MemStats.MStoreOverlapElidedLimbCount),
       static_cast<unsigned long long>(MemStats.MStoreAddrValueAliasReuseCount),
       static_cast<unsigned long long>(MemStats.ExpandNeedExpandCFGCount));
+
+  ZEN_LOG_DEBUG(
+      "[EVM-MEM-SUMMARY] small_frame_candidate_total=%llu "
+      "small_frame_prechecked_total=%llu "
+      "small_frame_offset_const_total=%llu "
+      "small_frame_offset_known_u64_total=%llu "
+      "small_frame_mload_candidate=%llu "
+      "small_frame_mstore_candidate=%llu "
+      "small_frame_mstore8_candidate=%llu "
+      "small_frame_fallback_unknown_offset=%llu "
+      "small_frame_fallback_over_128=%llu "
+      "small_frame_fallback_no_precheck=%llu "
+      "small_frame_fallback_overflow=%llu "
+      "small_frame_fallback_dynamic_size=%llu "
+      "small_frame_fallback_gas_or_memory_semantics_uncertain=%llu",
+      static_cast<unsigned long long>(MemStats.SmallFrameCandidateTotal),
+      static_cast<unsigned long long>(MemStats.SmallFramePrecheckedTotal),
+      static_cast<unsigned long long>(MemStats.SmallFrameOffsetConstTotal),
+      static_cast<unsigned long long>(MemStats.SmallFrameOffsetKnownU64Total),
+      static_cast<unsigned long long>(MemStats.SmallFrameMLoadCandidate),
+      static_cast<unsigned long long>(MemStats.SmallFrameMStoreCandidate),
+      static_cast<unsigned long long>(MemStats.SmallFrameMStore8Candidate),
+      static_cast<unsigned long long>(MemStats.SmallFrameFallbackUnknownOffset),
+      static_cast<unsigned long long>(MemStats.SmallFrameFallbackOver128),
+      static_cast<unsigned long long>(MemStats.SmallFrameFallbackNoPrecheck),
+      static_cast<unsigned long long>(MemStats.SmallFrameFallbackOverflow),
+      static_cast<unsigned long long>(MemStats.SmallFrameFallbackDynamicSize),
+      static_cast<unsigned long long>(
+          MemStats.SmallFrameFallbackGasOrMemorySemanticsUncertain));
 #endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 }
 
