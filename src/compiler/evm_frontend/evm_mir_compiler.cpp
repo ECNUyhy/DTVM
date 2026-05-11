@@ -4873,7 +4873,15 @@ typename EVMMirBuilder::Operand
 EVMMirBuilder::handleKeccak256(Operand OffsetComponents,
                                Operand LengthComponents) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
+  const bool OffsetWasConstU64 = OffsetComponents.isConstU64();
+  const uint64_t ConstOffset =
+      OffsetWasConstU64 ? OffsetComponents.getConstValue()[0] : 0;
+  const bool LengthWasConstU64 = LengthComponents.isConstU64();
+  const uint64_t ConstLength =
+      LengthWasConstU64 ? LengthComponents.getConstValue()[0] : 0;
   normalizeOffsetWithSize(OffsetComponents, LengthComponents);
+  noteKeccak256MemoryAccess(OffsetWasConstU64, ConstOffset, LengthWasConstU64,
+                            ConstLength);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemory();
 #endif
@@ -5981,7 +5989,10 @@ bool EVMMirBuilder::hasMemoryCompileStats() const {
          MemStats.SmallFrameFallbackOver128 != 0 ||
          MemStats.SmallFrameFallbackNoPrecheck != 0 ||
          MemStats.SmallFrameFallbackOverflow != 0 ||
-         MemStats.SmallFrameFallbackDynamicSize != 0;
+         MemStats.SmallFrameFallbackDynamicSize != 0 ||
+         MemStats.HashPrepRegionCandidateCount != 0 ||
+         MemStats.HashPrepRegionVerifiedCount != 0 ||
+         MemStats.HashPrepKeccakRange0_64Count != 0;
 }
 
 void EVMMirBuilder::noteBlockMemoryEventPC(uint64_t PC) {
@@ -6013,6 +6024,39 @@ void EVMMirBuilder::noteSmallFrameMemoryOp(
 #ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
   constexpr uint64_t SmallFrameLimit = 128;
 
+  auto IsStore = [&]() {
+    return Op == SmallFrameMemoryOp::MStore ||
+           Op == SmallFrameMemoryOp::MStore8;
+  };
+  auto NoteHashPrepUnknownWriteRisk = [&]() {
+    if (CurBlockMemStats.Active && IsStore()) {
+      CurBlockMemStats.HashPrepPendingUnsupportedWrite = true;
+      CurBlockMemStats.HashPrepPendingAliasRisk = true;
+    }
+  };
+  auto NoteHashPrepConstWrite = [&](uint64_t Offset, uint64_t Size) {
+    if (!CurBlockMemStats.Active || !IsStore()) {
+      return;
+    }
+    const bool Overflows = Offset > (~uint64_t(0) - Size);
+    const uint64_t End = Overflows ? ~uint64_t(0) : Offset + Size;
+    const bool OverlapsTwoWordPreimage = !Overflows && Offset < 64 && End > 0;
+    if (Op == SmallFrameMemoryOp::MStore && Size == 32) {
+      if (Offset == 0) {
+        CurBlockMemStats.HashPrepPendingMStore0 = true;
+        return;
+      }
+      if (Offset == 32) {
+        CurBlockMemStats.HashPrepPendingMStore32 = true;
+        return;
+      }
+    }
+    if (OverlapsTwoWordPreimage) {
+      CurBlockMemStats.HashPrepPendingUnsupportedWrite = true;
+      CurBlockMemStats.HashPrepPendingInterveningWrite = true;
+    }
+  };
+
   if (OffsetWasConst) {
     ++MemStats.SmallFrameOffsetConstTotal;
   } else if (OffsetKnownU64) {
@@ -6020,6 +6064,7 @@ void EVMMirBuilder::noteSmallFrameMemoryOp(
   }
 
   if (AccessSize == 0 || AccessSize > SmallFrameLimit) {
+    NoteHashPrepUnknownWriteRisk();
     ++MemStats.SmallFrameFallbackDynamicSize;
     if (CurBlockMemStats.Active) {
       ++CurBlockMemStats.SmallFrameFallbackDynamicSizeCount;
@@ -6028,6 +6073,7 @@ void EVMMirBuilder::noteSmallFrameMemoryOp(
   }
 
   if (!OffsetWasConst) {
+    NoteHashPrepUnknownWriteRisk();
     if (OffsetKnownU64) {
       ++MemStats.SmallFrameFallbackDynamicSize;
       if (CurBlockMemStats.Active) {
@@ -6040,11 +6086,13 @@ void EVMMirBuilder::noteSmallFrameMemoryOp(
   }
 
   if (ConstOffset > (~uint64_t(0) - AccessSize)) {
+    NoteHashPrepUnknownWriteRisk();
     ++MemStats.SmallFrameFallbackOverflow;
     return;
   }
 
   const uint64_t AccessEnd = ConstOffset + AccessSize;
+  NoteHashPrepConstWrite(ConstOffset, AccessSize);
   if (AccessEnd > SmallFrameLimit) {
     ++MemStats.SmallFrameFallbackOver128;
     if (CurBlockMemStats.Active) {
@@ -6100,6 +6148,77 @@ void EVMMirBuilder::noteSmallFrameMemoryOp(
   (void)OffsetKnownU64;
   (void)AccessSize;
   (void)UsedSharedPrecheck;
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
+}
+
+void EVMMirBuilder::noteKeccak256MemoryAccess(bool OffsetWasConstU64,
+                                              uint64_t ConstOffset,
+                                              bool LengthWasConstU64,
+                                              uint64_t ConstLength) {
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
+  auto ResetPendingHashPrep = [&]() {
+    CurBlockMemStats.HashPrepPendingMStore0 = false;
+    CurBlockMemStats.HashPrepPendingMStore32 = false;
+    CurBlockMemStats.HashPrepPendingUnsupportedWrite = false;
+    CurBlockMemStats.HashPrepPendingAliasRisk = false;
+    CurBlockMemStats.HashPrepPendingInterveningWrite = false;
+  };
+
+  if (!CurBlockMemStats.Active) {
+    return;
+  }
+
+  if (!OffsetWasConstU64 || !LengthWasConstU64) {
+    ++CurBlockMemStats.HashPrepKeccakDynamicRangeCount;
+    ++CurBlockMemStats.HashPrepRejectedByteExactRiskCount;
+    ResetPendingHashPrep();
+    return;
+  }
+
+  ++CurBlockMemStats.HashPrepKeccakConstRangeCount;
+  if (ConstOffset > (~uint64_t(0) - ConstLength)) {
+    ++CurBlockMemStats.HashPrepKeccakOver128Count;
+    ResetPendingHashPrep();
+    return;
+  }
+
+  const uint64_t End = ConstOffset + ConstLength;
+  if (End > 128) {
+    ++CurBlockMemStats.HashPrepKeccakOver128Count;
+    ResetPendingHashPrep();
+    return;
+  }
+
+  if (ConstOffset != 0 || ConstLength != 64) {
+    ++CurBlockMemStats.HashPrepKeccakNonTwoWordRangeCount;
+    ResetPendingHashPrep();
+    return;
+  }
+
+  ++CurBlockMemStats.HashPrepKeccakRange0_64Count;
+  if (CurBlockMemStats.HashPrepPendingAliasRisk) {
+    ++CurBlockMemStats.HashPrepRejectedAliasRiskCount;
+    ++CurBlockMemStats.HashPrepRejectedAliasOrInterveningWriteCount;
+  } else if (CurBlockMemStats.HashPrepPendingInterveningWrite) {
+    ++CurBlockMemStats.HashPrepRejectedInterveningWriteCount;
+    ++CurBlockMemStats.HashPrepRejectedAliasOrInterveningWriteCount;
+  } else if (CurBlockMemStats.HashPrepPendingUnsupportedWrite) {
+    ++CurBlockMemStats.HashPrepRejectedByteExactRiskCount;
+    ++CurBlockMemStats.HashPrepRejectedAliasOrInterveningWriteCount;
+  } else if (CurBlockMemStats.HashPrepPendingMStore0 &&
+             CurBlockMemStats.HashPrepPendingMStore32) {
+    ++CurBlockMemStats.HashPrepVerifiedKeccakCount;
+  } else {
+    ++CurBlockMemStats.HashPrepRejectedOrderingRiskCount;
+    ++CurBlockMemStats.HashPrepRejectedByteExactRiskCount;
+    ++CurBlockMemStats.HashPrepRejectedMissingTwoWordStoresCount;
+  }
+  ResetPendingHashPrep();
+#else
+  (void)OffsetWasConstU64;
+  (void)ConstOffset;
+  (void)LengthWasConstU64;
+  (void)ConstLength;
 #endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 }
 
@@ -6162,7 +6281,26 @@ void EVMMirBuilder::dumpMemoryCompileStats() const {
       "small_frame_fallback_no_precheck=%llu "
       "small_frame_fallback_overflow=%llu "
       "small_frame_fallback_dynamic_size=%llu "
-      "small_frame_fallback_gas_or_memory_semantics_uncertain=%llu",
+      "small_frame_fallback_gas_or_memory_semantics_uncertain=%llu "
+      "hash_prep_region_candidates=%llu "
+      "hash_prep_region_candidate_ops=%llu "
+      "hash_prep_region_verified=%llu "
+      "hash_prep_region_verified_ops=%llu "
+      "hash_prep_keccak_const_range=%llu "
+      "hash_prep_keccak_range_0_64=%llu "
+      "hash_prep_keccak_dynamic_range=%llu "
+      "hash_prep_keccak_over_128=%llu "
+      "hash_prep_verified_two_word_preimage=%llu "
+      "hash_prep_verified_multi_hash=%llu "
+      "hash_prep_rejected_dynamic_offset=%llu "
+      "hash_prep_rejected_range_over_128=%llu "
+      "hash_prep_rejected_non_two_word_range=%llu "
+      "hash_prep_rejected_ordering_risk=%llu "
+      "hash_prep_rejected_alias_risk=%llu "
+      "hash_prep_rejected_intervening_write=%llu "
+      "hash_prep_rejected_byte_exact_risk=%llu "
+      "hash_prep_rejected_missing_two_word_stores=%llu "
+      "hash_prep_rejected_alias_or_intervening_write=%llu",
       static_cast<unsigned long long>(MemStats.SmallFrameCandidateTotal),
       static_cast<unsigned long long>(MemStats.SmallFramePrecheckedTotal),
       static_cast<unsigned long long>(MemStats.SmallFrameOffsetConstTotal),
@@ -6176,7 +6314,36 @@ void EVMMirBuilder::dumpMemoryCompileStats() const {
       static_cast<unsigned long long>(MemStats.SmallFrameFallbackOverflow),
       static_cast<unsigned long long>(MemStats.SmallFrameFallbackDynamicSize),
       static_cast<unsigned long long>(
-          MemStats.SmallFrameFallbackGasOrMemorySemanticsUncertain));
+          MemStats.SmallFrameFallbackGasOrMemorySemanticsUncertain),
+      static_cast<unsigned long long>(MemStats.HashPrepRegionCandidateCount),
+      static_cast<unsigned long long>(MemStats.HashPrepRegionCandidateOpCount),
+      static_cast<unsigned long long>(MemStats.HashPrepRegionVerifiedCount),
+      static_cast<unsigned long long>(MemStats.HashPrepRegionVerifiedOpCount),
+      static_cast<unsigned long long>(MemStats.HashPrepKeccakConstRangeCount),
+      static_cast<unsigned long long>(MemStats.HashPrepKeccakRange0_64Count),
+      static_cast<unsigned long long>(MemStats.HashPrepKeccakDynamicRangeCount),
+      static_cast<unsigned long long>(MemStats.HashPrepKeccakOver128Count),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepRegionVerifiedTwoWordPreimageCount),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepRegionVerifiedMultiHashCount),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepRegionRejectedDynamicOffset),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepRegionRejectedRangeOver128),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepRegionRejectedNonTwoWordRange),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepRegionRejectedOrderingRisk),
+      static_cast<unsigned long long>(MemStats.HashPrepRegionRejectedAliasRisk),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepRegionRejectedInterveningWrite),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepRegionRejectedByteExactRisk),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepRegionRejectedMissingTwoWordStores),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepRegionRejectedAliasOrInterveningWrite));
 #endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 }
 
@@ -6314,6 +6481,51 @@ void EVMMirBuilder::endMemoryCompileBlock() {
     CurBlockConstPrecheckPlan = MemoryBlockConstPrecheckPlan();
     CurBlockLinearPrecheckPlan = MemoryBlockLinearPrecheckPlan();
     return;
+  }
+
+  MemStats.HashPrepKeccakConstRangeCount +=
+      CurBlockMemStats.HashPrepKeccakConstRangeCount;
+  MemStats.HashPrepKeccakRange0_64Count +=
+      CurBlockMemStats.HashPrepKeccakRange0_64Count;
+  MemStats.HashPrepKeccakDynamicRangeCount +=
+      CurBlockMemStats.HashPrepKeccakDynamicRangeCount;
+  MemStats.HashPrepKeccakOver128Count +=
+      CurBlockMemStats.HashPrepKeccakOver128Count;
+  MemStats.HashPrepRegionRejectedDynamicOffset +=
+      CurBlockMemStats.HashPrepKeccakDynamicRangeCount;
+  MemStats.HashPrepRegionRejectedRangeOver128 +=
+      CurBlockMemStats.HashPrepKeccakOver128Count;
+  MemStats.HashPrepRegionRejectedNonTwoWordRange +=
+      CurBlockMemStats.HashPrepKeccakNonTwoWordRangeCount;
+  MemStats.HashPrepRegionRejectedOrderingRisk +=
+      CurBlockMemStats.HashPrepRejectedOrderingRiskCount;
+  MemStats.HashPrepRegionRejectedAliasRisk +=
+      CurBlockMemStats.HashPrepRejectedAliasRiskCount;
+  MemStats.HashPrepRegionRejectedInterveningWrite +=
+      CurBlockMemStats.HashPrepRejectedInterveningWriteCount;
+  MemStats.HashPrepRegionRejectedByteExactRisk +=
+      CurBlockMemStats.HashPrepRejectedByteExactRiskCount;
+  MemStats.HashPrepRegionRejectedMissingTwoWordStores +=
+      CurBlockMemStats.HashPrepRejectedMissingTwoWordStoresCount;
+  MemStats.HashPrepRegionRejectedAliasOrInterveningWrite +=
+      CurBlockMemStats.HashPrepRejectedAliasOrInterveningWriteCount;
+
+  if (CurBlockMemStats.SmallFrameFallbackNoPrecheckCount != 0 &&
+      CurBlockMemStats.KeccakCount != 0) {
+    const uint64_t MissingOps =
+        CurBlockMemStats.SmallFrameFallbackNoPrecheckCount;
+    ++MemStats.HashPrepRegionCandidateCount;
+    MemStats.HashPrepRegionCandidateOpCount += MissingOps;
+
+    if (CurBlockMemStats.HashPrepVerifiedKeccakCount != 0) {
+      ++MemStats.HashPrepRegionVerifiedCount;
+      MemStats.HashPrepRegionVerifiedOpCount += MissingOps;
+      if (CurBlockMemStats.HashPrepVerifiedKeccakCount == 1) {
+        ++MemStats.HashPrepRegionVerifiedTwoWordPreimageCount;
+      } else {
+        ++MemStats.HashPrepRegionVerifiedMultiHashCount;
+      }
+    }
   }
 
   ZEN_LOG_DEBUG(

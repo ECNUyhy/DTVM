@@ -1192,6 +1192,26 @@ private:
     uint64_t SmallFrameFallbackOverflow = 0;
     uint64_t SmallFrameFallbackDynamicSize = 0;
     uint64_t SmallFrameFallbackGasOrMemorySemanticsUncertain = 0;
+
+    uint64_t HashPrepRegionCandidateCount = 0;
+    uint64_t HashPrepRegionCandidateOpCount = 0;
+    uint64_t HashPrepRegionVerifiedCount = 0;
+    uint64_t HashPrepRegionVerifiedOpCount = 0;
+    uint64_t HashPrepKeccakConstRangeCount = 0;
+    uint64_t HashPrepKeccakRange0_64Count = 0;
+    uint64_t HashPrepKeccakDynamicRangeCount = 0;
+    uint64_t HashPrepKeccakOver128Count = 0;
+    uint64_t HashPrepRegionVerifiedTwoWordPreimageCount = 0;
+    uint64_t HashPrepRegionVerifiedMultiHashCount = 0;
+    uint64_t HashPrepRegionRejectedDynamicOffset = 0;
+    uint64_t HashPrepRegionRejectedRangeOver128 = 0;
+    uint64_t HashPrepRegionRejectedNonTwoWordRange = 0;
+    uint64_t HashPrepRegionRejectedOrderingRisk = 0;
+    uint64_t HashPrepRegionRejectedAliasRisk = 0;
+    uint64_t HashPrepRegionRejectedInterveningWrite = 0;
+    uint64_t HashPrepRegionRejectedByteExactRisk = 0;
+    uint64_t HashPrepRegionRejectedMissingTwoWordStores = 0;
+    uint64_t HashPrepRegionRejectedAliasOrInterveningWrite = 0;
   };
   bool hasMemoryCompileStats() const;
   MemoryCompileStats MemStats;
@@ -1253,6 +1273,24 @@ private:
     uint64_t SmallFrameNoPrecheckMLoadCount = 0;
     uint64_t SmallFrameNoPrecheckMStoreCount = 0;
     uint64_t SmallFrameNoPrecheckMStore8Count = 0;
+
+    bool HashPrepPendingMStore0 = false;
+    bool HashPrepPendingMStore32 = false;
+    bool HashPrepPendingUnsupportedWrite = false;
+    bool HashPrepPendingAliasRisk = false;
+    bool HashPrepPendingInterveningWrite = false;
+    uint64_t HashPrepKeccakConstRangeCount = 0;
+    uint64_t HashPrepKeccakRange0_64Count = 0;
+    uint64_t HashPrepKeccakDynamicRangeCount = 0;
+    uint64_t HashPrepKeccakOver128Count = 0;
+    uint64_t HashPrepKeccakNonTwoWordRangeCount = 0;
+    uint64_t HashPrepVerifiedKeccakCount = 0;
+    uint64_t HashPrepRejectedOrderingRiskCount = 0;
+    uint64_t HashPrepRejectedAliasRiskCount = 0;
+    uint64_t HashPrepRejectedInterveningWriteCount = 0;
+    uint64_t HashPrepRejectedByteExactRiskCount = 0;
+    uint64_t HashPrepRejectedMissingTwoWordStoresCount = 0;
+    uint64_t HashPrepRejectedAliasOrInterveningWriteCount = 0;
   };
   void noteBlockMemoryEventPC(uint64_t PC);
   bool hasCurrentMemoryBlockStats() const;
@@ -1282,6 +1320,8 @@ private:
   void noteSmallFrameMemoryOp(SmallFrameMemoryOp Op, bool OffsetWasConst,
                               uint64_t ConstOffset, bool OffsetKnownU64,
                               uint64_t AccessSize, bool UsedSharedPrecheck);
+  void noteKeccak256MemoryAccess(bool OffsetWasConstU64, uint64_t ConstOffset,
+                                 bool LengthWasConstU64, uint64_t ConstLength);
   uint64_t NextMemoryBlockSeqId = 0;
   MemoryBlockCompileStats CurBlockMemStats;
   MemoryBlockConstPrecheckPlan CurBlockConstPrecheckPlan;
