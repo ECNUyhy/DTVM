@@ -5992,7 +5992,11 @@ bool EVMMirBuilder::hasMemoryCompileStats() const {
          MemStats.SmallFrameFallbackDynamicSize != 0 ||
          MemStats.HashPrepRegionCandidateCount != 0 ||
          MemStats.HashPrepRegionVerifiedCount != 0 ||
-         MemStats.HashPrepKeccakRange0_64Count != 0;
+         MemStats.HashPrepKeccakRange0_64Count != 0 ||
+         MemStats.HashPrepLiftSimCandidateRegionCount != 0 ||
+         MemStats.HashPrepMarkerCandidateRegionCount != 0 ||
+         MemStats.HashPrepMarkerMarkedRegionCount != 0 ||
+         MemStats.HashPrepMarkerRejectedRegionCount != 0;
 }
 
 void EVMMirBuilder::noteBlockMemoryEventPC(uint64_t PC) {
@@ -6300,7 +6304,15 @@ void EVMMirBuilder::dumpMemoryCompileStats() const {
       "hash_prep_rejected_intervening_write=%llu "
       "hash_prep_rejected_byte_exact_risk=%llu "
       "hash_prep_rejected_missing_two_word_stores=%llu "
-      "hash_prep_rejected_alias_or_intervening_write=%llu",
+      "hash_prep_rejected_alias_or_intervening_write=%llu "
+      "hash_prep_lift_sim_candidate_regions=%llu "
+      "hash_prep_lift_sim_candidate_ops=%llu "
+      "hash_prep_lift_sim_covered_regions=%llu "
+      "hash_prep_lift_sim_covered_ops=%llu "
+      "hash_prep_lift_sim_safe_to_lift_regions=%llu "
+      "hash_prep_lift_sim_safe_to_lift_ops=%llu "
+      "hash_prep_lift_sim_rejected_regions=%llu "
+      "hash_prep_lift_sim_rejected_ops=%llu",
       static_cast<unsigned long long>(MemStats.SmallFrameCandidateTotal),
       static_cast<unsigned long long>(MemStats.SmallFramePrecheckedTotal),
       static_cast<unsigned long long>(MemStats.SmallFrameOffsetConstTotal),
@@ -6343,7 +6355,69 @@ void EVMMirBuilder::dumpMemoryCompileStats() const {
       static_cast<unsigned long long>(
           MemStats.HashPrepRegionRejectedMissingTwoWordStores),
       static_cast<unsigned long long>(
-          MemStats.HashPrepRegionRejectedAliasOrInterveningWrite));
+          MemStats.HashPrepRegionRejectedAliasOrInterveningWrite),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepLiftSimCandidateRegionCount),
+      static_cast<unsigned long long>(MemStats.HashPrepLiftSimCandidateOpCount),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepLiftSimCoveredRegionCount),
+      static_cast<unsigned long long>(MemStats.HashPrepLiftSimCoveredOpCount),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepLiftSimSafeToLiftRegionCount),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepLiftSimSafeToLiftOpCount),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepLiftSimRejectedRegionCount),
+      static_cast<unsigned long long>(MemStats.HashPrepLiftSimRejectedOpCount));
+
+  ZEN_LOG_DEBUG(
+      "[EVM-MEM-SUMMARY] hash_prep_marker_candidate_regions=%llu "
+      "hash_prep_marker_candidate_ops=%llu "
+      "hash_prep_marker_marked_regions=%llu "
+      "hash_prep_marker_covered_ops=%llu "
+      "hash_prep_marker_covered_mstore_ops=%llu "
+      "hash_prep_marker_covered_mload_ops=%llu "
+      "hash_prep_marker_covered_keccak_ops=%llu "
+      "hash_prep_marker_rejected_regions=%llu "
+      "hash_prep_marker_rejected_ops=%llu "
+      "hash_prep_marker_rejected_non_0_64_range=%llu "
+      "hash_prep_marker_rejected_dynamic_offset=%llu "
+      "hash_prep_marker_rejected_alias_or_intervening_write=%llu "
+      "hash_prep_marker_rejected_mixed_predecessor=%llu "
+      "hash_prep_marker_rejected_byte_exact_risk=%llu "
+      "hash_prep_marker_rejected_gas_memory_semantics=%llu "
+      "hash_prep_marker_rejected_pointer_instability=%llu "
+      "hash_prep_marker_rejected_unknown_helper=%llu",
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerCandidateRegionCount),
+      static_cast<unsigned long long>(MemStats.HashPrepMarkerCandidateOpCount),
+      static_cast<unsigned long long>(MemStats.HashPrepMarkerMarkedRegionCount),
+      static_cast<unsigned long long>(MemStats.HashPrepMarkerCoveredOpCount),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerCoveredMStoreOpCount),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerCoveredMLoadOpCount),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerCoveredKeccakOpCount),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerRejectedRegionCount),
+      static_cast<unsigned long long>(MemStats.HashPrepMarkerRejectedOpCount),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerRejectedNon0_64Range),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerRejectedDynamicOffset),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerRejectedAliasOrInterveningWrite),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerRejectedMixedPredecessor),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerRejectedByteExactRisk),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerRejectedGasMemorySemantics),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerRejectedPointerInstability),
+      static_cast<unsigned long long>(
+          MemStats.HashPrepMarkerRejectedUnknownHelper));
 #endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 }
 
@@ -6516,6 +6590,11 @@ void EVMMirBuilder::endMemoryCompileBlock() {
         CurBlockMemStats.SmallFrameFallbackNoPrecheckCount;
     ++MemStats.HashPrepRegionCandidateCount;
     MemStats.HashPrepRegionCandidateOpCount += MissingOps;
+    ++MemStats.HashPrepLiftSimCandidateRegionCount;
+    MemStats.HashPrepLiftSimCandidateOpCount += MissingOps;
+    CurBlockMemStats.HashPrepMarkerCandidate = true;
+    ++MemStats.HashPrepMarkerCandidateRegionCount;
+    MemStats.HashPrepMarkerCandidateOpCount += MissingOps;
 
     if (CurBlockMemStats.HashPrepVerifiedKeccakCount != 0) {
       ++MemStats.HashPrepRegionVerifiedCount;
@@ -6524,6 +6603,58 @@ void EVMMirBuilder::endMemoryCompileBlock() {
         ++MemStats.HashPrepRegionVerifiedTwoWordPreimageCount;
       } else {
         ++MemStats.HashPrepRegionVerifiedMultiHashCount;
+      }
+      ++MemStats.HashPrepLiftSimCoveredRegionCount;
+      MemStats.HashPrepLiftSimCoveredOpCount += MissingOps;
+      ++MemStats.HashPrepLiftSimSafeToLiftRegionCount;
+      MemStats.HashPrepLiftSimSafeToLiftOpCount += MissingOps;
+
+      CurBlockMemStats.HashPrepMarkerMarked = true;
+      CurBlockMemStats.HashPrepMarkerId = ++NextHashPrepMarkerId;
+      CurBlockMemStats.HashPrepMarkerRangeBegin = 0;
+      CurBlockMemStats.HashPrepMarkerRangeEnd = 64;
+      CurBlockMemStats.HashPrepMarkerCoveredOpCount = MissingOps;
+      CurBlockMemStats.HashPrepMarkerCoveredMStoreOpCount =
+          CurBlockMemStats.SmallFrameNoPrecheckMStoreCount;
+      CurBlockMemStats.HashPrepMarkerCoveredMLoadOpCount =
+          CurBlockMemStats.SmallFrameNoPrecheckMLoadCount;
+      CurBlockMemStats.HashPrepMarkerCoveredKeccakOpCount =
+          CurBlockMemStats.HashPrepVerifiedKeccakCount;
+
+      ++MemStats.HashPrepMarkerMarkedRegionCount;
+      MemStats.HashPrepMarkerCoveredOpCount += MissingOps;
+      MemStats.HashPrepMarkerCoveredMStoreOpCount +=
+          CurBlockMemStats.HashPrepMarkerCoveredMStoreOpCount;
+      MemStats.HashPrepMarkerCoveredMLoadOpCount +=
+          CurBlockMemStats.HashPrepMarkerCoveredMLoadOpCount;
+      MemStats.HashPrepMarkerCoveredKeccakOpCount +=
+          CurBlockMemStats.HashPrepMarkerCoveredKeccakOpCount;
+    } else {
+      ++MemStats.HashPrepLiftSimRejectedRegionCount;
+      MemStats.HashPrepLiftSimRejectedOpCount += MissingOps;
+
+      ++MemStats.HashPrepMarkerRejectedRegionCount;
+      MemStats.HashPrepMarkerRejectedOpCount += MissingOps;
+      if (CurBlockMemStats.HashPrepKeccakDynamicRangeCount != 0) {
+        CurBlockMemStats.HashPrepMarkerRejectedReason = 1;
+        ++MemStats.HashPrepMarkerRejectedDynamicOffset;
+      } else if (CurBlockMemStats.HashPrepKeccakNonTwoWordRangeCount != 0 ||
+                 CurBlockMemStats.HashPrepKeccakOver128Count != 0) {
+        CurBlockMemStats.HashPrepMarkerRejectedReason = 2;
+        ++MemStats.HashPrepMarkerRejectedNon0_64Range;
+      } else if (CurBlockMemStats
+                     .HashPrepRejectedAliasOrInterveningWriteCount != 0) {
+        CurBlockMemStats.HashPrepMarkerRejectedReason = 3;
+        ++MemStats.HashPrepMarkerRejectedAliasOrInterveningWrite;
+      } else if (CurBlockMemStats.HashPrepRejectedByteExactRiskCount != 0 ||
+                 CurBlockMemStats.HashPrepRejectedOrderingRiskCount != 0 ||
+                 CurBlockMemStats.HashPrepRejectedMissingTwoWordStoresCount !=
+                     0) {
+        CurBlockMemStats.HashPrepMarkerRejectedReason = 4;
+        ++MemStats.HashPrepMarkerRejectedByteExactRisk;
+      } else {
+        CurBlockMemStats.HashPrepMarkerRejectedReason = 5;
+        ++MemStats.HashPrepMarkerRejectedUnknownHelper;
       }
     }
   }
@@ -6545,7 +6676,14 @@ void EVMMirBuilder::endMemoryCompileBlock() {
       "disp_bytes32_mload_ops=%llu disp_bytes32_mstore_ops=%llu "
       "mstore_zero_limb_stores=%llu mstore_overlap_elided_limbs=%llu "
       "mstore_addr_value_alias_reuse=%llu "
-      "direct_only_candidate=%d",
+      "direct_only_candidate=%d "
+      "hash_prep_marker_candidate=%d hash_prep_marker_marked=%d "
+      "hash_prep_marker_id=%llu hash_prep_marker_range_begin=%llu "
+      "hash_prep_marker_range_end=%llu hash_prep_marker_covered_ops=%llu "
+      "hash_prep_marker_covered_mstore_ops=%llu "
+      "hash_prep_marker_covered_mload_ops=%llu "
+      "hash_prep_marker_covered_keccak_ops=%llu "
+      "hash_prep_marker_rejected_reason=%llu",
       static_cast<unsigned long long>(CurBlockMemStats.BlockSeqId),
       static_cast<unsigned long long>(CurBlockMemStats.BlockEntryPC),
       static_cast<unsigned long long>(CurBlockMemStats.FirstMemoryEventPC),
@@ -6596,7 +6734,23 @@ void EVMMirBuilder::endMemoryCompileBlock() {
           CurBlockMemStats.MStoreOverlapElidedLimbCount),
       static_cast<unsigned long long>(
           CurBlockMemStats.MStoreAddrValueAliasReuseCount),
-      CurBlockMemStats.DirectMemoryOnlyCandidate ? 1 : 0);
+      CurBlockMemStats.DirectMemoryOnlyCandidate ? 1 : 0,
+      CurBlockMemStats.HashPrepMarkerCandidate ? 1 : 0,
+      CurBlockMemStats.HashPrepMarkerMarked ? 1 : 0,
+      static_cast<unsigned long long>(CurBlockMemStats.HashPrepMarkerId),
+      static_cast<unsigned long long>(
+          CurBlockMemStats.HashPrepMarkerRangeBegin),
+      static_cast<unsigned long long>(CurBlockMemStats.HashPrepMarkerRangeEnd),
+      static_cast<unsigned long long>(
+          CurBlockMemStats.HashPrepMarkerCoveredOpCount),
+      static_cast<unsigned long long>(
+          CurBlockMemStats.HashPrepMarkerCoveredMStoreOpCount),
+      static_cast<unsigned long long>(
+          CurBlockMemStats.HashPrepMarkerCoveredMLoadOpCount),
+      static_cast<unsigned long long>(
+          CurBlockMemStats.HashPrepMarkerCoveredKeccakOpCount),
+      static_cast<unsigned long long>(
+          CurBlockMemStats.HashPrepMarkerRejectedReason));
 #endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 
   CurBlockMemStats.Active = false;
