@@ -189,8 +189,7 @@ int main(int argc, char **argv) {
 
   try {
     zen::setGlobalLogger(
-        createConsoleLogger("evm_memory_execute_only_bench",
-                            Options.LogLevel));
+        createConsoleLogger("evm_memory_execute_only_bench", Options.LogLevel));
   } catch (const std::exception &E) {
     std::cerr << "failed to create logger: " << E.what() << "\n";
     return EXIT_FAILURE;
@@ -220,8 +219,8 @@ int main(int argc, char **argv) {
   const EVMMemorySpecializationProfile MemoryProfile =
       deriveEVMMemorySpecializationProfileFromCallData(CalldataBytes->data(),
                                                        CalldataBytes->size());
-  auto ModRet = RT->loadEVMModule(Options.InputFile, Options.EvmRevision,
-                                  MemoryProfile);
+  auto ModRet =
+      RT->loadEVMModule(Options.InputFile, Options.EvmRevision, MemoryProfile);
   if (!ModRet) {
     const auto &ErrMsg = ModRet.getError().getFormattedMessage(false);
     std::cerr << "failed to load EVM module: " << ErrMsg << "\n";
@@ -304,8 +303,7 @@ int main(int argc, char **argv) {
       Csv << Options.BuildLabel << ',' << Options.SampleName << ',' << I << ','
           << ElapsedNs << ',' << ExitCode << '\n';
       AllSucceeded = AllSucceeded && Success;
-      AllSucceeded =
-          AllSucceeded && verifyOutput(Options, Result, "formal", I);
+      AllSucceeded = AllSucceeded && verifyOutput(Options, Result, "formal", I);
       continue;
     }
 
@@ -320,8 +318,7 @@ int main(int argc, char **argv) {
         BatchExitCode = ExitCode;
       }
       AllSucceeded = AllSucceeded && Success;
-      AllSucceeded =
-          AllSucceeded && verifyOutput(Options, Result, "formal", I);
+      AllSucceeded = AllSucceeded && verifyOutput(Options, Result, "formal", I);
     }
     const auto End = std::chrono::steady_clock::now();
     const auto TotalNs =

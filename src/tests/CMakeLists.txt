@@ -69,8 +69,9 @@ if(ZEN_ENABLE_SPEC_TEST)
       add_executable(evmJitFrontendTests evm_jit_frontend_tests.cpp)
       add_executable(evmRangeAnalyzerTests evm_range_analyzer_tests.cpp)
       add_executable(evmDifferentialTests evm_differential_tests.cpp)
-      add_executable(evmMemoryExecuteOnlyBench
-                     evm_memory_execute_only_bench.cpp)
+      add_executable(
+        evmMemoryExecuteOnlyBench evm_memory_execute_only_bench.cpp
+      )
     endif()
     add_executable(
       solidityContractTests evm_precompiles.hpp solidity_contract_tests.cpp
@@ -159,8 +160,8 @@ if(ZEN_ENABLE_SPEC_TEST)
             PUBLIC ${GTEST_BOTH_LIBRARIES}
           )
           target_link_libraries(
-            evmMemoryExecuteOnlyBench
-            PRIVATE dtvmcore CLI11::CLI11 -fsanitize=address
+            evmMemoryExecuteOnlyBench PRIVATE dtvmcore CLI11::CLI11
+                                              -fsanitize=address
           )
         endif()
         target_link_libraries(
@@ -328,8 +329,9 @@ if(ZEN_ENABLE_SPEC_TEST)
           PRIVATE dtvmcore gtest_main
           PUBLIC ${GTEST_BOTH_LIBRARIES}
         )
-        target_link_libraries(evmMemoryExecuteOnlyBench PRIVATE dtvmcore
-                                                              CLI11::CLI11)
+        target_link_libraries(
+          evmMemoryExecuteOnlyBench PRIVATE dtvmcore CLI11::CLI11
+        )
       endif()
       target_link_libraries(
         solidityContractTests
