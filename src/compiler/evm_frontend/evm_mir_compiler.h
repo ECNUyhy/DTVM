@@ -1024,6 +1024,10 @@ public:
       uint64_t RejectUnboundedInterval, uint64_t RejectOverflowRisk,
       uint64_t RejectSideEffect, uint64_t RejectHelperByteExactRisk,
       uint64_t RejectTooFewOps);
+  void setMemoryCompileBlockLargeStaticWorkspacePrecheckPlan(
+      uint64_t FirstCoveredPC, uint64_t LastCoveredPC, uint64_t MaxRequiredSize,
+      uint64_t CoveredDirectOps, uint64_t CoveredMLoadOps,
+      uint64_t CoveredMStoreOps, uint64_t CoveredMStore8Ops);
   void prepareLinearBlockMemoryPrecheck(Operand StrideComponents);
   void noteMemoryOpcodeInBlock(evmc_opcode Opcode, uint64_t PC);
   void noteHelperOpcodeInBlock(evmc_opcode Opcode, uint64_t PC);
@@ -1535,6 +1539,16 @@ private:
     uint64_t LargeStaticWorkspaceRejectSideEffect = 0;
     uint64_t LargeStaticWorkspaceRejectHelperByteExactRisk = 0;
     uint64_t LargeStaticWorkspaceRejectTooFewOps = 0;
+    uint64_t LargeStaticWorkspaceLoweringCandidateCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringEnabledRegionCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringPrecheckedOpCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringPrecheckedMLoadOpCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringPrecheckedMStoreOpCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringDispMLoadOpCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringDispMStoreOpCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringFallbackRegionCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringDisabledByGateCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringUnsafePrecheckPositionCount = 0;
   };
   bool hasMemoryCompileStats() const;
   bool hasArithCompileStats() const;
@@ -1642,6 +1656,16 @@ private:
     uint64_t LargeStaticWorkspaceRejectSideEffect = 0;
     uint64_t LargeStaticWorkspaceRejectHelperByteExactRisk = 0;
     uint64_t LargeStaticWorkspaceRejectTooFewOps = 0;
+    uint64_t LargeStaticWorkspaceLoweringCandidateCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringEnabledRegionCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringPrecheckedOpCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringPrecheckedMLoadOpCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringPrecheckedMStoreOpCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringDispMLoadOpCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringDispMStoreOpCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringFallbackRegionCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringDisabledByGateCount = 0;
+    uint64_t LargeStaticWorkspaceLoweringUnsafePrecheckPositionCount = 0;
   };
   void noteBlockMemoryEventPC(uint64_t PC);
   bool hasCurrentMemoryBlockStats() const;
@@ -1664,9 +1688,28 @@ private:
     uint64_t CoveredDirectOpsRemaining = 0;
     Operand PendingStrideComponents;
   };
+  struct MemoryBlockLargeStaticWorkspacePrecheckPlan {
+    bool Active = false;
+    bool Emitted = false;
+    bool FallbackCounted = false;
+    bool HasAnchoredBasePtr = false;
+    uint64_t FirstCoveredPC = 0;
+    uint64_t LastCoveredPC = 0;
+    uint64_t MaxRequiredSize = 0;
+    uint64_t CoveredDirectOpsTotal = 0;
+    uint64_t CoveredDirectOpsRemaining = 0;
+    uint64_t CoveredMLoadOpsTotal = 0;
+    uint64_t CoveredMStoreOpsTotal = 0;
+    uint64_t CoveredMStore8OpsTotal = 0;
+    Variable *AnchoredBasePtrVar = nullptr;
+  };
   bool tryConsumeConstBlockMemoryPrecheck();
   bool tryConsumeLinearBlockMemoryPrecheck(MInstruction *FirstAddr,
                                            MInstruction *OrderingDep);
+  bool tryConsumeLargeStaticWorkspacePrecheck(evmc_opcode Opcode,
+                                              bool OffsetWasConst,
+                                              uint64_t ConstOffset,
+                                              uint64_t AccessSize);
   uint64_t NextHashPrepMarkerId = 0;
   enum class SmallFrameMemoryOp : uint8_t { MLoad, MStore, MStore8 };
   void noteSmallFrameMemoryOp(SmallFrameMemoryOp Op, bool OffsetWasConst,
@@ -1675,14 +1718,18 @@ private:
   void noteKeccak256MemoryAccess(bool OffsetWasConstU64, uint64_t ConstOffset,
                                  bool LengthWasConstU64, uint64_t ConstLength);
   uint64_t NextMemoryBlockSeqId = 0;
+  uint64_t CurrentMemoryOpPC = 0;
   MemoryBlockCompileStats CurBlockMemStats;
   MemoryBlockConstPrecheckPlan CurBlockConstPrecheckPlan;
   MemoryBlockLinearPrecheckPlan CurBlockLinearPrecheckPlan;
+  MemoryBlockLargeStaticWorkspacePrecheckPlan
+      CurBlockLargeStaticWorkspacePrecheckPlan;
 
   // Helper methods for memory operations
   MInstruction *getMemoryDataPointer();
   MInstruction *getDirectMemoryDataPointer(bool PreferCachedBase);
   MInstruction *getConstBlockDirectMemoryBasePtr();
+  MInstruction *getLargeStaticWorkspaceDirectMemoryBasePtr();
   MInstruction *getMemorySize();
   void reloadMemorySizeFromInstance();
   void expandMemoryIR(MInstruction *RequiredSize, MInstruction *Overflow);

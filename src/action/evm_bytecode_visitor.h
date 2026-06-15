@@ -81,6 +81,14 @@ private:
     uint64_t RejectSideEffect = 0;
     uint64_t RejectHelperByteExactRisk = 0;
     uint64_t RejectTooFewOps = 0;
+    bool HasLoweringPlan = false;
+    uint64_t LoweringFirstPC = 0;
+    uint64_t LoweringLastPC = 0;
+    uint64_t LoweringMaxRequiredSize = 0;
+    uint64_t LoweringCoveredOps = 0;
+    uint64_t LoweringCoveredMLoadOps = 0;
+    uint64_t LoweringCoveredMStoreOps = 0;
+    uint64_t LoweringCoveredMStore8Ops = 0;
   };
 
   template <typename T, typename = void>
@@ -1082,6 +1090,18 @@ private:
           LargeStaticWorkspace.RejectHelperByteExactRisk,
           LargeStaticWorkspace.RejectTooFewOps);
     }
+#ifdef ZEN_ENABLE_EVM_MEM_LARGE_STATIC_WORKSPACE_LOWERING
+    if (LargeStaticWorkspace.HasLoweringPlan) {
+      Builder.setMemoryCompileBlockLargeStaticWorkspacePrecheckPlan(
+          LargeStaticWorkspace.LoweringFirstPC,
+          LargeStaticWorkspace.LoweringLastPC,
+          LargeStaticWorkspace.LoweringMaxRequiredSize,
+          LargeStaticWorkspace.LoweringCoveredOps,
+          LargeStaticWorkspace.LoweringCoveredMLoadOps,
+          LargeStaticWorkspace.LoweringCoveredMStoreOps,
+          LargeStaticWorkspace.LoweringCoveredMStore8Ops);
+    }
+#endif // ZEN_ENABLE_EVM_MEM_LARGE_STATIC_WORKSPACE_LOWERING
     const auto &BlockInfo = BlockInfos.at(PC);
     CurrentBlockEntryPC = PC;
     CurrentBlockHiddenLiveInPrefixDepth = 0;
@@ -1465,6 +1485,8 @@ private:
       uint64_t MStoreOps = 0;
       uint64_t MStore8Ops = 0;
       uint64_t MaxRequiredSize = 0;
+      uint64_t FirstDirectPC = 0;
+      uint64_t LastDirectPC = 0;
     };
 
     enum class SegmentRejectReason : uint8_t {
@@ -1510,6 +1532,17 @@ private:
         Result.VerifiedMStore8Ops += Segment.MStore8Ops;
         if (Segment.MaxRequiredSize > Result.MaxRequiredSize) {
           Result.MaxRequiredSize = Segment.MaxRequiredSize;
+        }
+        if (!Result.HasLoweringPlan ||
+            Segment.DirectOps > Result.LoweringCoveredOps) {
+          Result.HasLoweringPlan = true;
+          Result.LoweringFirstPC = Segment.FirstDirectPC;
+          Result.LoweringLastPC = Segment.LastDirectPC;
+          Result.LoweringMaxRequiredSize = Segment.MaxRequiredSize;
+          Result.LoweringCoveredOps = Segment.DirectOps;
+          Result.LoweringCoveredMLoadOps = Segment.MLoadOps;
+          Result.LoweringCoveredMStoreOps = Segment.MStoreOps;
+          Result.LoweringCoveredMStore8Ops = Segment.MStore8Ops;
         }
       } else {
         ++Result.Rejected;
@@ -1564,9 +1597,13 @@ private:
       SimStack.push_back(makeKnownConstU64(Value));
     };
 
-    auto NoteDirectMemoryOp = [&](evmc_opcode Opcode, AbstractConstU64 Offset,
-                                  uint64_t Size) {
+    auto NoteDirectMemoryOp = [&](evmc_opcode Opcode, uint64_t OpPC,
+                                  AbstractConstU64 Offset, uint64_t Size) {
       Segment.Active = true;
+      if (Segment.DirectOps == 0) {
+        Segment.FirstDirectPC = OpPC;
+      }
+      Segment.LastDirectPC = OpPC;
       ++Segment.DirectOps;
       switch (Opcode) {
       case OP_MLOAD:
@@ -1832,20 +1869,20 @@ private:
         break;
       case OP_MLOAD: {
         AbstractConstU64 Offset = Pop();
-        NoteDirectMemoryOp(Opcode, Offset, 32);
+        NoteDirectMemoryOp(Opcode, ScanPC, Offset, 32);
         PushUnknown();
         break;
       }
       case OP_MSTORE: {
         AbstractConstU64 Offset = Pop();
         Drop(1);
-        NoteDirectMemoryOp(Opcode, Offset, 32);
+        NoteDirectMemoryOp(Opcode, ScanPC, Offset, 32);
         break;
       }
       case OP_MSTORE8: {
         AbstractConstU64 Offset = Pop();
         Drop(1);
-        NoteDirectMemoryOp(Opcode, Offset, 1);
+        NoteDirectMemoryOp(Opcode, ScanPC, Offset, 1);
         break;
       }
       case OP_MSIZE:
