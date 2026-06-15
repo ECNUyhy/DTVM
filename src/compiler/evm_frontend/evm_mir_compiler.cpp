@@ -6893,7 +6893,10 @@ bool EVMMirBuilder::hasMemoryCompileStats() const {
          MemStats.HashPrepLiftSimCandidateRegionCount != 0 ||
          MemStats.HashPrepMarkerCandidateRegionCount != 0 ||
          MemStats.HashPrepMarkerMarkedRegionCount != 0 ||
-         MemStats.HashPrepMarkerRejectedRegionCount != 0;
+         MemStats.HashPrepMarkerRejectedRegionCount != 0 ||
+         MemStats.LargeStaticWorkspaceCandidateCount != 0 ||
+         MemStats.LargeStaticWorkspaceVerifiedSegmentCount != 0 ||
+         MemStats.LargeStaticWorkspaceRejectedCount != 0;
 }
 
 bool EVMMirBuilder::hasArithCompileStats() const {
@@ -7361,6 +7364,52 @@ void EVMMirBuilder::dumpMemoryCompileStats() const {
         static_cast<unsigned long long>(MemStats.DivU128OpportunityCount),
         static_cast<unsigned long long>(MemStats.ModU128OpportunityCount));
   }
+
+  ZEN_LOG_DEBUG("[EVM-MEM-SUMMARY] large_static_workspace_candidates=%llu "
+                "large_static_workspace_verified_segments=%llu "
+                "large_static_workspace_verified_ops=%llu "
+                "large_static_workspace_verified_mload_ops=%llu "
+                "large_static_workspace_verified_mstore_ops=%llu "
+                "large_static_workspace_verified_mstore8_ops=%llu "
+                "large_static_workspace_max_required_size=%llu "
+                "large_static_workspace_rejected=%llu "
+                "large_static_workspace_reject_dynamic_offset=%llu "
+                "large_static_workspace_reject_unknown_base=%llu "
+                "large_static_workspace_reject_unbounded_interval=%llu "
+                "large_static_workspace_reject_overflow_risk=%llu "
+                "large_static_workspace_reject_side_effect=%llu "
+                "large_static_workspace_reject_helper_byte_exact_risk=%llu "
+                "large_static_workspace_reject_too_few_ops=%llu",
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceCandidateCount),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceVerifiedSegmentCount),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceVerifiedOpCount),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceVerifiedMLoadOpCount),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceVerifiedMStoreOpCount),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceVerifiedMStore8OpCount),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceMaxRequiredSize),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceRejectedCount),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceRejectDynamicOffset),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceRejectUnknownBase),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceRejectUnboundedInterval),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceRejectOverflowRisk),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceRejectSideEffect),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceRejectHelperByteExactRisk),
+                static_cast<unsigned long long>(
+                    MemStats.LargeStaticWorkspaceRejectTooFewOps));
 #endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 }
 
@@ -7410,6 +7459,81 @@ void EVMMirBuilder::prepareLinearBlockMemoryPrecheck(Operand StrideComponents) {
   }
   CurBlockLinearPrecheckPlan.PendingStrideComponents = StrideComponents;
   CurBlockLinearPrecheckPlan.HasPendingStride = true;
+}
+
+void EVMMirBuilder::noteLargeStaticWorkspaceVerifierResult(
+    uint64_t Candidates, uint64_t VerifiedSegments, uint64_t VerifiedOps,
+    uint64_t VerifiedMLoadOps, uint64_t VerifiedMStoreOps,
+    uint64_t VerifiedMStore8Ops, uint64_t MaxRequiredSize, uint64_t Rejected,
+    uint64_t RejectDynamicOffset, uint64_t RejectUnknownBase,
+    uint64_t RejectUnboundedInterval, uint64_t RejectOverflowRisk,
+    uint64_t RejectSideEffect, uint64_t RejectHelperByteExactRisk,
+    uint64_t RejectTooFewOps) {
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
+  if (!CurBlockMemStats.Active ||
+      (Candidates == 0 && VerifiedSegments == 0 && Rejected == 0)) {
+    return;
+  }
+
+  MemStats.LargeStaticWorkspaceCandidateCount += Candidates;
+  MemStats.LargeStaticWorkspaceVerifiedSegmentCount += VerifiedSegments;
+  MemStats.LargeStaticWorkspaceVerifiedOpCount += VerifiedOps;
+  MemStats.LargeStaticWorkspaceVerifiedMLoadOpCount += VerifiedMLoadOps;
+  MemStats.LargeStaticWorkspaceVerifiedMStoreOpCount += VerifiedMStoreOps;
+  MemStats.LargeStaticWorkspaceVerifiedMStore8OpCount += VerifiedMStore8Ops;
+  if (MaxRequiredSize > MemStats.LargeStaticWorkspaceMaxRequiredSize) {
+    MemStats.LargeStaticWorkspaceMaxRequiredSize = MaxRequiredSize;
+  }
+  MemStats.LargeStaticWorkspaceRejectedCount += Rejected;
+  MemStats.LargeStaticWorkspaceRejectDynamicOffset += RejectDynamicOffset;
+  MemStats.LargeStaticWorkspaceRejectUnknownBase += RejectUnknownBase;
+  MemStats.LargeStaticWorkspaceRejectUnboundedInterval +=
+      RejectUnboundedInterval;
+  MemStats.LargeStaticWorkspaceRejectOverflowRisk += RejectOverflowRisk;
+  MemStats.LargeStaticWorkspaceRejectSideEffect += RejectSideEffect;
+  MemStats.LargeStaticWorkspaceRejectHelperByteExactRisk +=
+      RejectHelperByteExactRisk;
+  MemStats.LargeStaticWorkspaceRejectTooFewOps += RejectTooFewOps;
+
+  CurBlockMemStats.LargeStaticWorkspaceCandidateCount += Candidates;
+  CurBlockMemStats.LargeStaticWorkspaceVerifiedSegmentCount += VerifiedSegments;
+  CurBlockMemStats.LargeStaticWorkspaceVerifiedOpCount += VerifiedOps;
+  CurBlockMemStats.LargeStaticWorkspaceVerifiedMLoadOpCount += VerifiedMLoadOps;
+  CurBlockMemStats.LargeStaticWorkspaceVerifiedMStoreOpCount +=
+      VerifiedMStoreOps;
+  CurBlockMemStats.LargeStaticWorkspaceVerifiedMStore8OpCount +=
+      VerifiedMStore8Ops;
+  if (MaxRequiredSize > CurBlockMemStats.LargeStaticWorkspaceMaxRequiredSize) {
+    CurBlockMemStats.LargeStaticWorkspaceMaxRequiredSize = MaxRequiredSize;
+  }
+  CurBlockMemStats.LargeStaticWorkspaceRejectedCount += Rejected;
+  CurBlockMemStats.LargeStaticWorkspaceRejectDynamicOffset +=
+      RejectDynamicOffset;
+  CurBlockMemStats.LargeStaticWorkspaceRejectUnknownBase += RejectUnknownBase;
+  CurBlockMemStats.LargeStaticWorkspaceRejectUnboundedInterval +=
+      RejectUnboundedInterval;
+  CurBlockMemStats.LargeStaticWorkspaceRejectOverflowRisk += RejectOverflowRisk;
+  CurBlockMemStats.LargeStaticWorkspaceRejectSideEffect += RejectSideEffect;
+  CurBlockMemStats.LargeStaticWorkspaceRejectHelperByteExactRisk +=
+      RejectHelperByteExactRisk;
+  CurBlockMemStats.LargeStaticWorkspaceRejectTooFewOps += RejectTooFewOps;
+#else
+  (void)Candidates;
+  (void)VerifiedSegments;
+  (void)VerifiedOps;
+  (void)VerifiedMLoadOps;
+  (void)VerifiedMStoreOps;
+  (void)VerifiedMStore8Ops;
+  (void)MaxRequiredSize;
+  (void)Rejected;
+  (void)RejectDynamicOffset;
+  (void)RejectUnknownBase;
+  (void)RejectUnboundedInterval;
+  (void)RejectOverflowRisk;
+  (void)RejectSideEffect;
+  (void)RejectHelperByteExactRisk;
+  (void)RejectTooFewOps;
+#endif // ZEN_ENABLE_MULTIPASS_JIT_LOGGING
 }
 
 void EVMMirBuilder::noteMemoryOpcodeInBlock(evmc_opcode Opcode, uint64_t PC) {

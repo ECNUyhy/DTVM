@@ -1016,6 +1016,14 @@ public:
   setMemoryCompileBlockLinearPrecheckPlan(uint64_t AccessWidth,
                                           uint64_t CoveredDirectOps,
                                           bool ValueEqualsFirstAddr = false);
+  void noteLargeStaticWorkspaceVerifierResult(
+      uint64_t Candidates, uint64_t VerifiedSegments, uint64_t VerifiedOps,
+      uint64_t VerifiedMLoadOps, uint64_t VerifiedMStoreOps,
+      uint64_t VerifiedMStore8Ops, uint64_t MaxRequiredSize, uint64_t Rejected,
+      uint64_t RejectDynamicOffset, uint64_t RejectUnknownBase,
+      uint64_t RejectUnboundedInterval, uint64_t RejectOverflowRisk,
+      uint64_t RejectSideEffect, uint64_t RejectHelperByteExactRisk,
+      uint64_t RejectTooFewOps);
   void prepareLinearBlockMemoryPrecheck(Operand StrideComponents);
   void noteMemoryOpcodeInBlock(evmc_opcode Opcode, uint64_t PC);
   void noteHelperOpcodeInBlock(evmc_opcode Opcode, uint64_t PC);
@@ -1511,6 +1519,22 @@ private:
     uint64_t MulU128OpportunityCount = 0;
     uint64_t DivU128OpportunityCount = 0;
     uint64_t ModU128OpportunityCount = 0;
+
+    uint64_t LargeStaticWorkspaceCandidateCount = 0;
+    uint64_t LargeStaticWorkspaceVerifiedSegmentCount = 0;
+    uint64_t LargeStaticWorkspaceVerifiedOpCount = 0;
+    uint64_t LargeStaticWorkspaceVerifiedMLoadOpCount = 0;
+    uint64_t LargeStaticWorkspaceVerifiedMStoreOpCount = 0;
+    uint64_t LargeStaticWorkspaceVerifiedMStore8OpCount = 0;
+    uint64_t LargeStaticWorkspaceMaxRequiredSize = 0;
+    uint64_t LargeStaticWorkspaceRejectedCount = 0;
+    uint64_t LargeStaticWorkspaceRejectDynamicOffset = 0;
+    uint64_t LargeStaticWorkspaceRejectUnknownBase = 0;
+    uint64_t LargeStaticWorkspaceRejectUnboundedInterval = 0;
+    uint64_t LargeStaticWorkspaceRejectOverflowRisk = 0;
+    uint64_t LargeStaticWorkspaceRejectSideEffect = 0;
+    uint64_t LargeStaticWorkspaceRejectHelperByteExactRisk = 0;
+    uint64_t LargeStaticWorkspaceRejectTooFewOps = 0;
   };
   bool hasMemoryCompileStats() const;
   bool hasArithCompileStats() const;
@@ -1602,6 +1626,22 @@ private:
     uint64_t HashPrepMarkerCoveredMLoadOpCount = 0;
     uint64_t HashPrepMarkerCoveredKeccakOpCount = 0;
     uint64_t HashPrepMarkerRejectedReason = 0;
+
+    uint64_t LargeStaticWorkspaceCandidateCount = 0;
+    uint64_t LargeStaticWorkspaceVerifiedSegmentCount = 0;
+    uint64_t LargeStaticWorkspaceVerifiedOpCount = 0;
+    uint64_t LargeStaticWorkspaceVerifiedMLoadOpCount = 0;
+    uint64_t LargeStaticWorkspaceVerifiedMStoreOpCount = 0;
+    uint64_t LargeStaticWorkspaceVerifiedMStore8OpCount = 0;
+    uint64_t LargeStaticWorkspaceMaxRequiredSize = 0;
+    uint64_t LargeStaticWorkspaceRejectedCount = 0;
+    uint64_t LargeStaticWorkspaceRejectDynamicOffset = 0;
+    uint64_t LargeStaticWorkspaceRejectUnknownBase = 0;
+    uint64_t LargeStaticWorkspaceRejectUnboundedInterval = 0;
+    uint64_t LargeStaticWorkspaceRejectOverflowRisk = 0;
+    uint64_t LargeStaticWorkspaceRejectSideEffect = 0;
+    uint64_t LargeStaticWorkspaceRejectHelperByteExactRisk = 0;
+    uint64_t LargeStaticWorkspaceRejectTooFewOps = 0;
   };
   void noteBlockMemoryEventPC(uint64_t PC);
   bool hasCurrentMemoryBlockStats() const;

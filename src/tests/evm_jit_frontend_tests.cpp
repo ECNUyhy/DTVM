@@ -394,6 +394,11 @@ public:
     LastLinearPrecheckCoveredDirectOps = CoveredDirectOps;
     LastLinearPrecheckValueEqualsFirstAddr = ValueEqualsFirstAddr;
   }
+  void noteLargeStaticWorkspaceVerifierResult(uint64_t, uint64_t, uint64_t,
+                                              uint64_t, uint64_t, uint64_t,
+                                              uint64_t, uint64_t, uint64_t,
+                                              uint64_t, uint64_t, uint64_t,
+                                              uint64_t, uint64_t, uint64_t) {}
   void prepareLinearBlockMemoryPrecheck(Operand) {
     LinearPrecheckPrepareCount++;
   }
