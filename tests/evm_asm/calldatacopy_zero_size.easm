@@ -1,0 +1,11 @@
+// CALLDATACOPY with size 0 must not access or expand memory
+PUSH1 0x2a
+PUSH1 0x00
+MSTORE
+PUSH1 0x00
+PUSH32 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+PUSH32 0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+CALLDATACOPY
+PUSH1 0x20
+PUSH1 0x00
+RETURN

@@ -4552,6 +4552,10 @@ typename EVMMirBuilder::Operand EVMMirBuilder::handleCodeSize() {
 void EVMMirBuilder::handleCodeCopy(Operand DestOffsetComponents,
                                    Operand OffsetComponents,
                                    Operand SizeComponents) {
+  if (SizeComponents.isConstU64() && SizeComponents.getConstValue()[0] == 0) {
+    return;
+  }
+
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
   normalizeOffsetWithSize(DestOffsetComponents, SizeComponents);
   uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
@@ -6715,6 +6719,10 @@ MInstruction *EVMMirBuilder::getCurrentInstancePointer() {
 void EVMMirBuilder::handleCallDataCopy(Operand DestOffsetComponents,
                                        Operand OffsetComponents,
                                        Operand SizeComponents) {
+  if (SizeComponents.isConstU64() && SizeComponents.getConstValue()[0] == 0) {
+    return;
+  }
+
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
   uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
   normalizeOperandU64(DestOffsetComponents, &Non64Value);
