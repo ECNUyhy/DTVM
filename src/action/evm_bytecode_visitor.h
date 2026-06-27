@@ -1356,8 +1356,7 @@ private:
       uint64_t MotifPC = ScanPC;
       if (!consumeExpectedOpcode(Bytecode, BytecodeSize, MotifPC, OP_DUP1) ||
           !consumeExpectedOpcode(Bytecode, BytecodeSize, MotifPC, OP_DUP1) ||
-          !consumeExpectedOpcode(Bytecode, BytecodeSize, MotifPC,
-                                 OP_MSTORE8) ||
+          !consumeExpectedOpcode(Bytecode, BytecodeSize, MotifPC, OP_MSTORE8) ||
           !consumeExpectedOpcode(Bytecode, BytecodeSize, MotifPC, OP_DUP2) ||
           !consumeExpectedOpcode(Bytecode, BytecodeSize, MotifPC, OP_ADD)) {
         return {};
