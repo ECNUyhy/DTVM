@@ -484,6 +484,10 @@ void CallDataCopyHandler::doExecute() {
   intx::uint256 DestOffsetVal = Frame->pop();
   intx::uint256 OffsetVal = Frame->pop();
   intx::uint256 SizeVal = Frame->pop();
+  if (SizeVal == 0) {
+    return;
+  }
+
   // Ensure memory is large enough
   if (!checkMemoryExpandAndChargeGas(Frame, DestOffsetVal, SizeVal)) {
     Context->setStatus(EVMC_OUT_OF_GAS);
@@ -538,6 +542,10 @@ void CodeCopyHandler::doExecute() {
   intx::uint256 DestOffsetVal = Frame->pop();
   intx::uint256 OffsetVal = Frame->pop();
   intx::uint256 SizeVal = Frame->pop();
+  if (SizeVal == 0) {
+    return;
+  }
+
   // Ensure memory is large enough
   if (!checkMemoryExpandAndChargeGas(Frame, DestOffsetVal, SizeVal)) {
     Context->setStatus(EVMC_OUT_OF_GAS);
