@@ -619,6 +619,10 @@ void ExtCodeCopyHandler::doExecute() {
     Frame->Msg.gas -= ADDITIONAL_COLD_ACCOUNT_ACCESS_COST;
   }
 
+  if (SizeVal == 0) {
+    return;
+  }
+
   // Ensure memory is large enough
   if (!checkMemoryExpandAndChargeGas(Frame, DestOffsetVal, SizeVal)) {
     Context->setStatus(EVMC_OUT_OF_GAS);
@@ -633,15 +637,13 @@ void ExtCodeCopyHandler::doExecute() {
     return;
   }
 
-  if (Size > 0) {
-    // Copy code to memory
-    size_t CopiedSize = Frame->Host->copy_code(
-        Addr, Offset, Frame->Memory.data() + DestOffset, Size);
-    if (CopiedSize < Size) {
-      // If the copied size is less than requested, fill the rest with zeros
-      std::memset(Frame->Memory.data() + DestOffset + CopiedSize, 0,
-                  Size - CopiedSize);
-    }
+  // Copy code to memory
+  size_t CopiedSize = Frame->Host->copy_code(
+      Addr, Offset, Frame->Memory.data() + DestOffset, Size);
+  if (CopiedSize < Size) {
+    // If the copied size is less than requested, fill the rest with zeros
+    std::memset(Frame->Memory.data() + DestOffset + CopiedSize, 0,
+                Size - CopiedSize);
   }
 }
 void ReturnDataSizeHandler::doExecute() {

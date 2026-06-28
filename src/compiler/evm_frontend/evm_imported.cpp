@@ -691,6 +691,11 @@ void evmSetExtCodeCopy(zen::runtime::EVMInstance *Instance,
     }
   }
 
+  // When Size is 0, no memory operations are needed
+  if (Size == 0) {
+    return;
+  }
+
   if (!Instance->expandMemoryChecked(DestOffset, Size)) {
     return;
   }
@@ -699,11 +704,6 @@ void evmSetExtCodeCopy(zen::runtime::EVMInstance *Instance,
     if (!Instance->chargeGas(CopyGas)) {
       return;
     }
-  }
-
-  // When Size is 0, no memory operations are needed
-  if (Size == 0) {
-    return;
   }
 
   uint8_t *MemoryBase = Instance->getMemoryBase();
