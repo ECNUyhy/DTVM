@@ -1406,6 +1406,7 @@ private:
     uint64_t BlockLinearPrecheckCount = 0;
     uint64_t PrecheckedMLoadOpCount = 0;
     uint64_t PrecheckedMStoreOpCount = 0;
+    uint64_t PrecheckedMCopyOpCount = 0;
     uint64_t MStoreAddrValueAliasReuseCount = 0;
     uint64_t LinearU64AddrFastPathCount = 0;
     uint64_t LinearU64MLoadFastPathCount = 0;
@@ -1552,6 +1553,7 @@ private:
     uint64_t PrecheckedDirectOpCount = 0;
     uint64_t PrecheckedMLoadOpCount = 0;
     uint64_t PrecheckedMStoreOpCount = 0;
+    uint64_t PrecheckedMCopyOpCount = 0;
     uint64_t MStoreAddrValueAliasReuseCount = 0;
     uint64_t LinearU64AddrFastPathCount = 0;
     uint64_t LinearU64MLoadFastPathCount = 0;
