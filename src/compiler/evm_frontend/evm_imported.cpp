@@ -134,6 +134,23 @@ void storeWordToMemory(uint8_t *Dst, const intx::uint256 &Word) {
   std::memcpy(Dst, Bytes.bytes, sizeof(Bytes.bytes));
 }
 
+const uint8_t *hashPreparedKeccakTwoWord(zen::runtime::EVMInstance *Instance,
+                                         uint8_t *MemoryBase, uint64_t Offset,
+                                         const intx::uint256 &Word0,
+                                         const intx::uint256 &Word1) {
+  constexpr uint64_t KeccakTwoWordLength = 64;
+  ZEN_ASSERT(MemoryBase);
+  storeWordToMemory(MemoryBase + Offset, Word0);
+  storeWordToMemory(MemoryBase + Offset + 32, Word1);
+  const uint64_t ExtraGas =
+      static_cast<uint64_t>(numWords(KeccakTwoWordLength)) * 6;
+  if (!Instance->chargeGas(ExtraGas)) {
+    return nullptr;
+  }
+  return cacheKeccak256Result(Instance, MemoryBase + Offset,
+                              KeccakTwoWordLength);
+}
+
 inline void triggerStaticModeViolation(zen::runtime::EVMInstance *Instance) {
   Instance->setGas(0);
   zen::runtime::EVMInstance::triggerInstanceExceptionOnJIT(
@@ -1304,25 +1321,16 @@ const uint8_t *evmGetKeccak256TwoWord(zen::runtime::EVMInstance *Instance,
   if (!prepareKeccakMemoryRange(Instance, Offset, 64, MemoryBase)) {
     return nullptr;
   }
-  return evmGetKeccak256TwoWordNoExpand(Instance, Offset, Word0, Word1);
+  return hashPreparedKeccakTwoWord(Instance, MemoryBase, Offset, Word0, Word1);
 }
 
 const uint8_t *
 evmGetKeccak256TwoWordNoExpand(zen::runtime::EVMInstance *Instance,
                                uint64_t Offset, const intx::uint256 &Word0,
                                const intx::uint256 &Word1) {
-  constexpr uint64_t KeccakTwoWordLength = 64;
+  // JIT no-expand callers must prove and materialize [Offset, Offset + 64).
   uint8_t *MemoryBase = Instance->getMemoryBase();
-  ZEN_ASSERT(MemoryBase);
-  storeWordToMemory(MemoryBase + Offset, Word0);
-  storeWordToMemory(MemoryBase + Offset + 32, Word1);
-  const uint64_t ExtraGas =
-      static_cast<uint64_t>(numWords(KeccakTwoWordLength)) * 6;
-  if (!Instance->chargeGas(ExtraGas)) {
-    return nullptr;
-  }
-  return cacheKeccak256Result(Instance, MemoryBase + Offset,
-                              KeccakTwoWordLength);
+  return hashPreparedKeccakTwoWord(Instance, MemoryBase, Offset, Word0, Word1);
 }
 
 const uint8_t *evmGetKeccak256CallDataSlot(zen::runtime::EVMInstance *Instance,
