@@ -661,6 +661,18 @@ TEST(EVMMultipassKeccakHelperTest,
                                {}, EVMC_OUT_OF_GAS);
 }
 
+TEST(EVMMultipassKeccakHelperTest,
+     CallDataConstSlotHelperPreservesMemoryExpansionFailureSemantics) {
+  auto BytecodeBuf = zen::utils::fromHex(
+      "60003562ffffe0526005630100000052604062ffffe02060005260206000f3");
+  ASSERT_TRUE(BytecodeBuf)
+      << "Failed to parse calldata-slot memory edge bytecode";
+
+  expectInterpMatchesMultipass("keccak_calldata_const_slot_mem_oog",
+                               *BytecodeBuf, makeUint256Calldata(0x1234),
+                               EVMC_OUT_OF_GAS);
+}
+
 TEST(EVMMultipassJumpRegressionTest, InvalidJumpDestStillMatchesInterpreter) {
   const std::vector<uint8_t> Bytecode = {0x60, 0x04, 0x56, 0x00, 0x00};
 
