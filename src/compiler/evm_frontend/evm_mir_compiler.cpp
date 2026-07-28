@@ -5656,7 +5656,13 @@ void EVMMirBuilder::handleReturn(Operand MemOffsetComponents,
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemoryFull();
 #endif
-  preExpandMemoryRange(MemOffsetComponents, LengthComponents);
+  const bool UsedGuaranteedElision =
+      preExpandMemoryRange(MemOffsetComponents, LengthComponents, true);
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
+  if (UsedGuaranteedElision) {
+    ++MemStats.ReturnGuaranteedElisionCount;
+  }
+#endif
   callRuntimeForWithErrorCheck<void, uint64_t, uint64_t>(
       RuntimeFunctions.SetReturnNoExpand, MemOffsetComponents,
       LengthComponents);
@@ -5732,7 +5738,13 @@ void EVMMirBuilder::handleRevert(Operand OffsetOp, Operand SizeOp) {
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemoryFull();
 #endif
-  preExpandMemoryRange(OffsetOp, SizeOp);
+  const bool UsedGuaranteedElision =
+      preExpandMemoryRange(OffsetOp, SizeOp, true);
+#ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
+  if (UsedGuaranteedElision) {
+    ++MemStats.RevertGuaranteedElisionCount;
+  }
+#endif
   callRuntimeForWithErrorCheck<void, uint64_t, uint64_t>(
       RuntimeFunctions.SetRevertNoExpand, OffsetOp, SizeOp);
 
@@ -6737,15 +6749,24 @@ void EVMMirBuilder::checkStaticModeIR() {
   setInsertBlock(ContinueBB);
 }
 
-void EVMMirBuilder::preExpandMemoryRange(Operand &Offset, Operand &Size) {
+bool EVMMirBuilder::preExpandMemoryRange(Operand &Offset, Operand &Size,
+                                         bool AllowGuaranteedElision) {
   if (Size.isZeroConstant()) {
     const U256Value ZeroValue = {0, 0, 0, 0};
     Offset = Operand(ZeroValue);
     Size = Operand(ZeroValue);
-    return;
+    return false;
   }
 
+  const bool OffsetWasConst = Offset.isConstU64();
+  const uint64_t ConstOffset = OffsetWasConst ? Offset.getConstValue()[0] : 0;
+  const bool SizeWasConst = Size.isConstU64();
+  const uint64_t ConstSize = SizeWasConst ? Size.getConstValue()[0] : 0;
   normalizeOffsetWithSize(Offset, Size);
+  if (AllowGuaranteedElision && OffsetWasConst && SizeWasConst &&
+      tryUseGuaranteedMinBytesExpansionElision(true, ConstOffset, ConstSize)) {
+    return true;
+  }
 
   MType *I64Type = &Ctx.I64Type;
   MInstruction *OffsetLow = extractKnownU64LowOperand(Offset);
@@ -6756,6 +6777,7 @@ void EVMMirBuilder::preExpandMemoryRange(Operand &Offset, Operand &Size) {
       false, CmpInstruction::Predicate::ICMP_ULT, I64Type, RequiredSize,
       OffsetLow);
   expandMemoryIR(RequiredSize, Overflow);
+  return false;
 }
 
 void EVMMirBuilder::preExpandKeccakTwoWordMemory(Operand &OffsetComponents) {
@@ -7327,6 +7349,8 @@ bool EVMMirBuilder::hasMemoryCompileStats() const {
          MemStats.ReloadMemorySizeCount != 0 ||
          MemStats.GetMemoryDataPointerCount != 0 ||
          MemStats.ExpandNeedExpandCFGCount != 0 ||
+         MemStats.ReturnGuaranteedElisionCount != 0 ||
+         MemStats.RevertGuaranteedElisionCount != 0 ||
          MemStats.MemoryExpansionPlanGroupingCandidates != 0 ||
          MemStats.MemoryExpansionPlanLinearRegionCandidates != 0 ||
          MemStats.MemoryExpansionPlanPrecheckCandidates != 0 ||
@@ -7762,7 +7786,8 @@ void EVMMirBuilder::dumpMemoryCompileStats() const {
       "disp_bytes32_mload_ops=%llu disp_bytes32_mstore_ops=%llu "
       "mstore_zero_limb_stores=%llu mstore_overlap_elided_limbs=%llu "
       "mstore_addr_value_alias_reuse=%llu "
-      "need_expand_cfg=%llu",
+      "need_expand_cfg=%llu return_guaranteed_elision=%llu "
+      "revert_guaranteed_elision=%llu",
       static_cast<unsigned long long>(MemStats.MLoadExpandCount),
       static_cast<unsigned long long>(MemStats.MStoreExpandCount),
       static_cast<unsigned long long>(MemStats.MStore8ExpandCount),
@@ -7930,7 +7955,9 @@ void EVMMirBuilder::dumpMemoryCompileStats() const {
       static_cast<unsigned long long>(MemStats.MStoreZeroLimbStoreCount),
       static_cast<unsigned long long>(MemStats.MStoreOverlapElidedLimbCount),
       static_cast<unsigned long long>(MemStats.MStoreAddrValueAliasReuseCount),
-      static_cast<unsigned long long>(MemStats.ExpandNeedExpandCFGCount));
+      static_cast<unsigned long long>(MemStats.ExpandNeedExpandCFGCount),
+      static_cast<unsigned long long>(MemStats.ReturnGuaranteedElisionCount),
+      static_cast<unsigned long long>(MemStats.RevertGuaranteedElisionCount));
 
   ZEN_LOG_DEBUG(
       "[EVM-MEM-SUMMARY] small_frame_candidate_total=%llu "
