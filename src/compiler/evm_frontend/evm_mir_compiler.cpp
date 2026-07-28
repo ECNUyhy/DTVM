@@ -5861,7 +5861,12 @@ EVMMirBuilder::handleKeccak256(Operand OffsetComponents,
     syncGasToMemory();
 #endif
   } else {
-    preExpandMemoryRange(OffsetComponents, LengthComponents);
+    const bool ExpansionCovered = OffsetWasConstU64 && LengthWasConstU64 &&
+                                  tryUseGuaranteedMinBytesExpansionElision(
+                                      true, ConstOffset, ConstLength);
+    if (!ExpansionCovered) {
+      preExpandMemoryRange(OffsetComponents, LengthComponents);
+    }
     MInstruction *Length = extractKnownU64LowOperand(LengthComponents);
     chargeKeccakWordGasIR(Length);
   }
@@ -8639,6 +8644,7 @@ void EVMMirBuilder::noteMemoryOpcodeInBlock(evmc_opcode Opcode, uint64_t PC) {
 }
 
 void EVMMirBuilder::noteHelperOpcodeInBlock(evmc_opcode Opcode, uint64_t PC) {
+  CurrentMemoryOpPC = PC;
   if (!CurBlockMemStats.Active) {
     return;
   }
