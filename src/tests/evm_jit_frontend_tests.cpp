@@ -396,6 +396,43 @@ TEST(EVMMemoryGuaranteedMinBytesAnalysisTest, LearnsConstMCopyUnionEnd) {
   EXPECT_EQ(Guaranteed.getGuaranteedMinBytesBeforeOp(Facts.Ops[1].Id), 0x40u);
 }
 
+TEST(EVMMemoryGuaranteedMinBytesAnalysisTest, LearnsConstKeccakReadEnd) {
+  const std::vector<uint8_t> Bytecode = {OP_PUSH1, 0x40,         OP_PUSH1,
+                                         0x20,     OP_KECCAK256, OP_POP,
+                                         OP_PUSH1, 0x20,         OP_MLOAD};
+
+  COMPILER::MemoryFacts Facts = collectMemoryFacts(Bytecode);
+  COMPILER::MemoryGuaranteedMinBytesAnalysis Guaranteed(Facts);
+
+  ASSERT_EQ(Facts.Ops.size(), 2u);
+  EXPECT_EQ(Guaranteed.getGuaranteedMinBytesBeforeOp(Facts.Ops[1].Id), 0x60u);
+}
+
+TEST(EVMMemoryGuaranteedMinBytesAnalysisTest,
+     PropagatesConstKeccakGuaranteeToSuccessor) {
+  const std::vector<uint8_t> Bytecode = {
+      OP_PUSH1, 0x40,        OP_PUSH1, 0x20, OP_KECCAK256,
+      OP_POP,   OP_JUMPDEST, OP_PUSH1, 0x20, OP_MLOAD};
+
+  COMPILER::MemoryFacts Facts = collectAnalyzerMemoryFacts(Bytecode);
+  COMPILER::MemoryGuaranteedMinBytesAnalysis Guaranteed(Facts);
+
+  ASSERT_EQ(Facts.Ops.size(), 2u);
+  EXPECT_EQ(Guaranteed.getGuaranteedMinBytesAtEntry(6), 0x60u);
+}
+
+TEST(EVMMemoryGuaranteedMinBytesAnalysisTest, IgnoresZeroLengthKeccak) {
+  const std::vector<uint8_t> Bytecode = {OP_PUSH1, 0x00,         OP_PUSH1,
+                                         0x80,     OP_KECCAK256, OP_POP,
+                                         OP_PUSH1, 0x00,         OP_MLOAD};
+
+  COMPILER::MemoryFacts Facts = collectMemoryFacts(Bytecode);
+  COMPILER::MemoryGuaranteedMinBytesAnalysis Guaranteed(Facts);
+
+  ASSERT_EQ(Facts.Ops.size(), 2u);
+  EXPECT_EQ(Guaranteed.getGuaranteedMinBytesBeforeOp(Facts.Ops[1].Id), 0u);
+}
+
 TEST(EVMMemoryGuaranteedMinBytesAnalysisTest, IgnoresZeroLengthMCopy) {
   const std::vector<uint8_t> Bytecode = {OP_PUSH1, 0x00,    OP_PUSH1, 0x80,
                                          OP_PUSH1, 0xa0,    OP_MCOPY, OP_PUSH1,
