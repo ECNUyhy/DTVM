@@ -8639,6 +8639,7 @@ void EVMMirBuilder::noteMemoryOpcodeInBlock(evmc_opcode Opcode, uint64_t PC) {
 }
 
 void EVMMirBuilder::noteHelperOpcodeInBlock(evmc_opcode Opcode, uint64_t PC) {
+  CurrentMemoryOpPC = PC;
   if (!CurBlockMemStats.Active) {
     return;
   }
