@@ -408,6 +408,44 @@ TEST(EVMMemoryGuaranteedMinBytesAnalysisTest, IgnoresZeroLengthMCopy) {
   EXPECT_EQ(Guaranteed.getGuaranteedMinBytesBeforeOp(Facts.Ops[1].Id), 0u);
 }
 
+TEST(EVMMemoryGuaranteedMinBytesAnalysisTest,
+     LearnsConstCallDataCopyDestinationEnd) {
+  const std::vector<uint8_t> Bytecode = {
+      OP_PUSH1,        0x20,     OP_PUSH1, 0x00,    OP_PUSH1, 0x80,
+      OP_CALLDATACOPY, OP_PUSH1, 0x80,     OP_MLOAD};
+
+  COMPILER::MemoryFacts Facts = collectMemoryFacts(Bytecode);
+  COMPILER::MemoryGuaranteedMinBytesAnalysis Guaranteed(Facts);
+
+  ASSERT_EQ(Facts.Ops.size(), 2u);
+  EXPECT_EQ(Guaranteed.getGuaranteedMinBytesBeforeOp(Facts.Ops[1].Id), 0xa0u);
+}
+
+TEST(EVMMemoryGuaranteedMinBytesAnalysisTest,
+     LearnsConstCodeCopyDestinationEnd) {
+  const std::vector<uint8_t> Bytecode = {
+      OP_PUSH1, 0x20,        OP_PUSH1, 0x00, OP_PUSH1,
+      0x40,     OP_CODECOPY, OP_PUSH1, 0x40, OP_MLOAD};
+
+  COMPILER::MemoryFacts Facts = collectMemoryFacts(Bytecode);
+  COMPILER::MemoryGuaranteedMinBytesAnalysis Guaranteed(Facts);
+
+  ASSERT_EQ(Facts.Ops.size(), 2u);
+  EXPECT_EQ(Guaranteed.getGuaranteedMinBytesBeforeOp(Facts.Ops[1].Id), 0x60u);
+}
+
+TEST(EVMMemoryGuaranteedMinBytesAnalysisTest, IgnoresZeroLengthCallDataCopy) {
+  const std::vector<uint8_t> Bytecode = {
+      OP_PUSH1,        0x00,     OP_PUSH1, 0x00,    OP_PUSH1, 0x80,
+      OP_CALLDATACOPY, OP_PUSH1, 0x00,     OP_MLOAD};
+
+  COMPILER::MemoryFacts Facts = collectMemoryFacts(Bytecode);
+  COMPILER::MemoryGuaranteedMinBytesAnalysis Guaranteed(Facts);
+
+  ASSERT_EQ(Facts.Ops.size(), 2u);
+  EXPECT_EQ(Guaranteed.getGuaranteedMinBytesBeforeOp(Facts.Ops[1].Id), 0u);
+}
+
 TEST(EVMMemoryFactsBuilderTest, RecordsCopyAddressSpaces) {
   const std::vector<uint8_t> Bytecode = {OP_PUSH1, 0x20, OP_PUSH1,       0x04,
                                          OP_PUSH1, 0x80, OP_CALLDATACOPY};
