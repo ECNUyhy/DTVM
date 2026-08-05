@@ -24,6 +24,8 @@
 
 // Forward declaration to avoid circular dependency
 namespace COMPILER {
+enum class RuntimeMemoryHelperId : uint8_t;
+class RuntimeProofToken;
 struct RuntimeFunctions;
 } // namespace COMPILER
 
@@ -1856,6 +1858,8 @@ private:
                                         const Operand &ArgsSize,
                                         const Operand &RetOffset,
                                         const Operand &RetSize);
+  void requireRuntimeHelperProofs(RuntimeMemoryHelperId Helper,
+                                  const RuntimeProofToken &Proofs) const;
   void applyMemoryExpansionPlan(const MemoryExpansionPlan &Plan);
   void noteMemoryExpansionPlan(const MemoryExpansionPlan &Plan);
   void noteMemoryExpansionPlanDiagnostics(
