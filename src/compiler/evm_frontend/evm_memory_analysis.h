@@ -1691,6 +1691,9 @@ public:
                                        MemoryProofQueryBudget Budget = {})
       : Facts(Facts), GuaranteedBytes(Facts, Budget) {}
 
+  // AdditionalGuaranteedBytes is trusted proof input: callers must establish
+  // that it is a true lower bound on every path reaching OpId. This analysis
+  // does not validate or infer that caller-provided bound.
   MemoryProofAvailability
   queryBeforeOp(uint32_t OpId, const MemoryInterval &RequiredRange,
                 uint64_t AdditionalGuaranteedBytes = 0) const {
@@ -1729,11 +1732,10 @@ public:
 
   bool canMoveExpansionBetween(uint32_t ProducerOpId,
                                uint32_t ConsumerOpId) const {
-    size_t ProducerIndex = 0;
-    size_t ConsumerIndex = 0;
-    if (!findOpIndex(ProducerOpId, ProducerIndex) ||
-        !findOpIndex(ConsumerOpId, ConsumerIndex) ||
-        ProducerIndex >= ConsumerIndex) {
+    const size_t ProducerIndex = Facts.getOpIndex(ProducerOpId);
+    const size_t ConsumerIndex = Facts.getOpIndex(ConsumerOpId);
+    if (ProducerIndex == Facts.Ops.size() ||
+        ConsumerIndex == Facts.Ops.size() || ProducerIndex >= ConsumerIndex) {
       return false;
     }
 
@@ -1770,16 +1772,6 @@ private:
     }
     End = Begin + Interval.Size.Value;
     return true;
-  }
-
-  bool findOpIndex(uint32_t OpId, size_t &Index) const {
-    for (size_t I = 0; I < Facts.Ops.size(); ++I) {
-      if (Facts.Ops[I].Id == OpId) {
-        Index = I;
-        return true;
-      }
-    }
-    return false;
   }
 
   const MemoryFacts &Facts;
