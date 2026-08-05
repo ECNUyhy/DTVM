@@ -266,6 +266,24 @@ std::string fixtureTestName(const testing::TestParamInfo<std::string> &Info) {
 
 } // namespace
 
+TEST(EVMPreparedCopyFallbackDifferential,
+     DynamicDestinationMatchesInterpreterOutputAndGas) {
+  const std::vector<uint8_t> Bytecode = {
+      OP_PUSH1,        0x04, // copy size
+      OP_PUSH0,              // code offset
+      OP_PUSH0,              // calldata offset
+      OP_CALLDATALOAD,
+      OP_CODECOPY, // dynamic destination offset
+      OP_PUSH1,        0x04, OP_PUSH1, 0x80, OP_RETURN,
+  };
+  std::vector<uint8_t> CallData(32, 0);
+  CallData.back() = 0x80;
+
+  const auto Output = expectInterpMatchesMultipassWithGas(
+      "codecopy_dynamic_destination_fallback", Bytecode, CallData);
+  EXPECT_EQ(Output, "60045F5F");
+}
+
 TEST(EVMKeccakMemoryProofDifferential,
      CrossBlockProofReusePreservesHashAndGas) {
   const std::vector<uint8_t> Bytecode = {
