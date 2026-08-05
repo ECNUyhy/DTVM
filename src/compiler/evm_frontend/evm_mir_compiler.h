@@ -1340,8 +1340,8 @@ private:
   MInstruction *extractKnownU64LowOperand(const Operand &Opnd);
   void checkStaticModeIR();
   void normalizeOffsetWithSize(Operand &Offset, Operand &Size);
-  bool preExpandMemoryRange(Operand &Offset, Operand &Size,
-                            bool AllowGuaranteedElision = false);
+  bool canUseGuaranteedMemoryRange(Operand &Offset, Operand &Size);
+  void preExpandMemoryRange(Operand &Offset, Operand &Size);
 
   Operand convertSingleInstrToU256Operand(MInstruction *SingleInstr);
   Operand convertU256InstrToU256Operand(MInstruction *U256Instr);
@@ -1891,9 +1891,6 @@ private:
   MInstruction *getMemorySize();
   void reloadMemorySizeFromInstance();
   void expandMemoryIR(MInstruction *RequiredSize, MInstruction *Overflow);
-  void preExpandKeccakTwoWordMemory(Operand &OffsetComponents);
-  bool preExpandCopyMemory(Operand &DestOffsetComponents,
-                           Operand &SizeComponents);
   void chargeWordCopyGasIR(MInstruction *Size);
   void chargeDynamicGasIR(MInstruction *GasCost);
   void chargeKeccakWordGasIR(MInstruction *Length);

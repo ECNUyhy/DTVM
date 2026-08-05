@@ -4739,22 +4739,42 @@ void EVMMirBuilder::handleCodeCopy(Operand DestOffsetComponents,
                                    Operand SizeComponents) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
   RuntimeProofToken Proofs;
-  if (preExpandCopyMemory(DestOffsetComponents, SizeComponents)) {
+  const bool EmptyRange = SizeComponents.isZeroConstant();
+  const bool UsePreparedMemory =
+      canUseGuaranteedMemoryRange(DestOffsetComponents, SizeComponents);
+  if (UsePreparedMemory) {
 #ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
-    ++MemStats.CopyGuaranteedElisionCount;
+    if (!EmptyRange) {
+      ++MemStats.CopyGuaranteedElisionCount;
+    }
 #endif
+    Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
+    Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
+    MInstruction *Size = extractKnownU64LowOperand(SizeComponents);
+    chargeWordCopyGasIR(Size);
+    Proofs.establish(RuntimeProofRequirementFlag::DynamicGasCharged);
+    requireRuntimeHelperProofs(RuntimeMemoryHelperId::CodeCopyNoExpand, Proofs);
   }
-  Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
-  Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
-  MInstruction *Size = extractKnownU64LowOperand(SizeComponents);
-  chargeWordCopyGasIR(Size);
-  Proofs.establish(RuntimeProofRequirementFlag::DynamicGasCharged);
+
   uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
   normalizeOperandU64(OffsetComponents, &Non64Value);
-  requireRuntimeHelperProofs(RuntimeMemoryHelperId::CodeCopyNoExpand, Proofs);
+#ifdef ZEN_ENABLE_EVM_GAS_REGISTER
+  if (!UsePreparedMemory) {
+    syncGasToMemory();
+  }
+#endif
   callRuntimeForWithErrorCheck<void, uint64_t, uint64_t, uint64_t>(
-      RuntimeFunctions.SetCodeCopyNoExpand, DestOffsetComponents,
-      OffsetComponents, SizeComponents);
+      UsePreparedMemory ? RuntimeFunctions.SetCodeCopyNoExpand
+                        : RuntimeFunctions.SetCodeCopy,
+      DestOffsetComponents, OffsetComponents, SizeComponents);
+#ifdef ZEN_ENABLE_EVM_GAS_REGISTER
+  if (!UsePreparedMemory) {
+    reloadGasFromMemory();
+  }
+#endif
+  if (!UsePreparedMemory) {
+    reloadMemorySizeFromInstance();
+  }
 }
 
 typename EVMMirBuilder::Operand
@@ -5718,23 +5738,27 @@ void EVMMirBuilder::handleReturn(Operand MemOffsetComponents,
                                  Operand LengthComponents) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
   RuntimeProofToken Proofs;
+  const bool EmptyRange = LengthComponents.isZeroConstant();
+  const bool UsePreparedMemory =
+      canUseGuaranteedMemoryRange(MemOffsetComponents, LengthComponents);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemoryFull();
 #endif
-  const bool UsedGuaranteedElision =
-      preExpandMemoryRange(MemOffsetComponents, LengthComponents, true);
 #ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
-  if (UsedGuaranteedElision) {
+  if (UsePreparedMemory && !EmptyRange) {
     ++MemStats.ReturnGuaranteedElisionCount;
   }
 #endif
-  Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
-  Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
-  Proofs.establish(RuntimeProofRequirementFlag::OrderToken);
-  requireRuntimeHelperProofs(RuntimeMemoryHelperId::ReturnNoExpand, Proofs);
+  if (UsePreparedMemory) {
+    Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
+    Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
+    Proofs.establish(RuntimeProofRequirementFlag::OrderToken);
+    requireRuntimeHelperProofs(RuntimeMemoryHelperId::ReturnNoExpand, Proofs);
+  }
   callRuntimeForWithErrorCheck<void, uint64_t, uint64_t>(
-      RuntimeFunctions.SetReturnNoExpand, MemOffsetComponents,
-      LengthComponents);
+      UsePreparedMemory ? RuntimeFunctions.SetReturnNoExpand
+                        : RuntimeFunctions.SetReturn,
+      MemOffsetComponents, LengthComponents);
 
   // RETURN terminates execution immediately. Keep the direct return path so no
   // shared epilogue rewrites the gas/result state set by the runtime helper.
@@ -5811,22 +5835,26 @@ EVMMirBuilder::handleStaticCall(Operand GasOp, Operand ToAddrOp,
 void EVMMirBuilder::handleRevert(Operand OffsetOp, Operand SizeOp) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
   RuntimeProofToken Proofs;
+  const bool EmptyRange = SizeOp.isZeroConstant();
+  const bool UsePreparedMemory = canUseGuaranteedMemoryRange(OffsetOp, SizeOp);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemoryFull();
 #endif
-  const bool UsedGuaranteedElision =
-      preExpandMemoryRange(OffsetOp, SizeOp, true);
 #ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
-  if (UsedGuaranteedElision) {
+  if (UsePreparedMemory && !EmptyRange) {
     ++MemStats.RevertGuaranteedElisionCount;
   }
 #endif
-  Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
-  Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
-  Proofs.establish(RuntimeProofRequirementFlag::OrderToken);
-  requireRuntimeHelperProofs(RuntimeMemoryHelperId::RevertNoExpand, Proofs);
+  if (UsePreparedMemory) {
+    Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
+    Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
+    Proofs.establish(RuntimeProofRequirementFlag::OrderToken);
+    requireRuntimeHelperProofs(RuntimeMemoryHelperId::RevertNoExpand, Proofs);
+  }
   callRuntimeForWithErrorCheck<void, uint64_t, uint64_t>(
-      RuntimeFunctions.SetRevertNoExpand, OffsetOp, SizeOp);
+      UsePreparedMemory ? RuntimeFunctions.SetRevertNoExpand
+                        : RuntimeFunctions.SetRevert,
+      OffsetOp, SizeOp);
 
   // REVERT terminates execution immediately. Keep the direct return path so no
   // shared epilogue rewrites the gas/result state set by the runtime helper.
@@ -5948,36 +5976,43 @@ EVMMirBuilder::handleKeccak256(Operand OffsetComponents,
   const uint64_t ConstLength =
       LengthWasConstU64 ? LengthComponents.getConstValue()[0] : 0;
   RuntimeProofToken Proofs;
-  if (LengthWasConstU64 && ConstLength == 0) {
-    normalizeOffsetWithSize(OffsetComponents, LengthComponents);
-#ifdef ZEN_ENABLE_EVM_GAS_REGISTER
-    syncGasToMemory();
-#endif
-  } else {
-    const bool ExpansionCovered = OffsetWasConstU64 && LengthWasConstU64 &&
-                                  tryUseGuaranteedMinBytesExpansionElision(
-                                      true, ConstOffset, ConstLength);
-    if (!ExpansionCovered) {
-      preExpandMemoryRange(OffsetComponents, LengthComponents);
+  const bool EmptyRange = LengthWasConstU64 && ConstLength == 0;
+  const bool UsePreparedMemory =
+      canUseGuaranteedMemoryRange(OffsetComponents, LengthComponents);
+  if (UsePreparedMemory) {
+    if (!EmptyRange) {
+      MInstruction *Length = extractKnownU64LowOperand(LengthComponents);
+      chargeKeccakWordGasIR(Length);
     }
-    MInstruction *Length = extractKnownU64LowOperand(LengthComponents);
-    chargeKeccakWordGasIR(Length);
+#ifdef ZEN_ENABLE_EVM_GAS_REGISTER
+    if (EmptyRange) {
+      syncGasToMemory();
+    }
+#endif
+    Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
+    Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
+    Proofs.establish(RuntimeProofRequirementFlag::DynamicGasCharged);
+    requireRuntimeHelperProofs(RuntimeMemoryHelperId::KeccakNoExpand, Proofs);
   }
-  Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
-  Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
-  // Zero-length KECCAK has zero word gas, so this obligation is discharged in
-  // both branches.
-  Proofs.establish(RuntimeProofRequirementFlag::DynamicGasCharged);
+#ifdef ZEN_ENABLE_EVM_GAS_REGISTER
+  if (!UsePreparedMemory) {
+    syncGasToMemory();
+  }
+#endif
+
   noteKeccak256MemoryAccess(OffsetWasConstU64, ConstOffset, LengthWasConstU64,
                             ConstLength);
-  requireRuntimeHelperProofs(RuntimeMemoryHelperId::KeccakNoExpand, Proofs);
   auto Result =
       callRuntimeForWithErrorCheck<const uint8_t *, uint64_t, uint64_t>(
-          RuntimeFunctions.GetKeccak256NoExpand, OffsetComponents,
-          LengthComponents);
+          UsePreparedMemory ? RuntimeFunctions.GetKeccak256NoExpand
+                            : RuntimeFunctions.GetKeccak256,
+          OffsetComponents, LengthComponents);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   reloadGasFromMemory();
 #endif
+  if (!UsePreparedMemory) {
+    reloadMemorySizeFromInstance();
+  }
   return Result;
 }
 
@@ -5986,22 +6021,30 @@ EVMMirBuilder::handleKeccak256TwoWord(Operand OffsetComponents, Operand Word0,
                                       Operand Word1) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
   RuntimeProofToken Proofs;
-  preExpandKeccakTwoWordMemory(OffsetComponents);
-  Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
-  Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
-  Proofs.establish(RuntimeProofRequirementFlag::OrderToken);
-  requireRuntimeHelperProofs(RuntimeMemoryHelperId::TwoWordKeccakNoExpand,
-                             Proofs);
+  Operand SizeComponents = createU256ConstOperand(intx::uint256{64});
+  const bool UsePreparedMemory =
+      canUseGuaranteedMemoryRange(OffsetComponents, SizeComponents);
+  if (UsePreparedMemory) {
+    Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
+    Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
+    Proofs.establish(RuntimeProofRequirementFlag::OrderToken);
+    requireRuntimeHelperProofs(RuntimeMemoryHelperId::TwoWordKeccakNoExpand,
+                               Proofs);
+  }
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemory();
 #endif
   auto Result = callRuntimeForWithErrorCheck<
       const uint8_t *, uint64_t, const intx::uint256 &, const intx::uint256 &>(
-      RuntimeFunctions.GetKeccak256TwoWordNoExpand, OffsetComponents, Word0,
-      Word1);
+      UsePreparedMemory ? RuntimeFunctions.GetKeccak256TwoWordNoExpand
+                        : RuntimeFunctions.GetKeccak256TwoWord,
+      OffsetComponents, Word0, Word1);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   reloadGasFromMemory();
 #endif
+  if (!UsePreparedMemory) {
+    reloadMemorySizeFromInstance();
+  }
   return Result;
 }
 
@@ -6009,12 +6052,16 @@ typename EVMMirBuilder::Operand EVMMirBuilder::handleKeccak256CallDataConstSlot(
     Operand OffsetComponents, Operand CallDataOffset, Operand SlotWord) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
   RuntimeProofToken Proofs;
-  preExpandKeccakTwoWordMemory(OffsetComponents);
-  Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
-  Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
-  Proofs.establish(RuntimeProofRequirementFlag::OrderToken);
-  requireRuntimeHelperProofs(RuntimeMemoryHelperId::TwoWordKeccakNoExpand,
-                             Proofs);
+  Operand SizeComponents = createU256ConstOperand(intx::uint256{64});
+  const bool UsePreparedMemory =
+      canUseGuaranteedMemoryRange(OffsetComponents, SizeComponents);
+  if (UsePreparedMemory) {
+    Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
+    Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
+    Proofs.establish(RuntimeProofRequirementFlag::OrderToken);
+    requireRuntimeHelperProofs(RuntimeMemoryHelperId::TwoWordKeccakNoExpand,
+                               Proofs);
+  }
   uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
   normalizeOperandU64(CallDataOffset, &Non64Value);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
@@ -6022,11 +6069,15 @@ typename EVMMirBuilder::Operand EVMMirBuilder::handleKeccak256CallDataConstSlot(
 #endif
   auto Result = callRuntimeForWithErrorCheck<const uint8_t *, uint64_t,
                                              uint64_t, const intx::uint256 &>(
-      RuntimeFunctions.GetKeccak256CallDataSlotNoExpand, OffsetComponents,
-      CallDataOffset, SlotWord);
+      UsePreparedMemory ? RuntimeFunctions.GetKeccak256CallDataSlotNoExpand
+                        : RuntimeFunctions.GetKeccak256CallDataSlot,
+      OffsetComponents, CallDataOffset, SlotWord);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   reloadGasFromMemory();
 #endif
+  if (!UsePreparedMemory) {
+    reloadMemorySizeFromInstance();
+  }
   return Result;
 }
 
@@ -6035,22 +6086,30 @@ EVMMirBuilder::handleKeccak256CallerConstSlot(Operand OffsetComponents,
                                               Operand SlotWord) {
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
   RuntimeProofToken Proofs;
-  preExpandKeccakTwoWordMemory(OffsetComponents);
-  Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
-  Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
-  Proofs.establish(RuntimeProofRequirementFlag::OrderToken);
-  requireRuntimeHelperProofs(RuntimeMemoryHelperId::TwoWordKeccakNoExpand,
-                             Proofs);
+  Operand SizeComponents = createU256ConstOperand(intx::uint256{64});
+  const bool UsePreparedMemory =
+      canUseGuaranteedMemoryRange(OffsetComponents, SizeComponents);
+  if (UsePreparedMemory) {
+    Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
+    Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
+    Proofs.establish(RuntimeProofRequirementFlag::OrderToken);
+    requireRuntimeHelperProofs(RuntimeMemoryHelperId::TwoWordKeccakNoExpand,
+                               Proofs);
+  }
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   syncGasToMemory();
 #endif
   auto Result = callRuntimeForWithErrorCheck<const uint8_t *, uint64_t,
                                              const intx::uint256 &>(
-      RuntimeFunctions.GetKeccak256CallerSlotNoExpand, OffsetComponents,
-      SlotWord);
+      UsePreparedMemory ? RuntimeFunctions.GetKeccak256CallerSlotNoExpand
+                        : RuntimeFunctions.GetKeccak256CallerSlot,
+      OffsetComponents, SlotWord);
 #ifdef ZEN_ENABLE_EVM_GAS_REGISTER
   reloadGasFromMemory();
 #endif
+  if (!UsePreparedMemory) {
+    reloadMemorySizeFromInstance();
+  }
   return Result;
 }
 
@@ -6869,25 +6928,32 @@ void EVMMirBuilder::checkStaticModeIR() {
   setInsertBlock(ContinueBB);
 }
 
-bool EVMMirBuilder::preExpandMemoryRange(Operand &Offset, Operand &Size,
-                                         bool AllowGuaranteedElision) {
-  if (Size.isZeroConstant()) {
-    const U256Value ZeroValue = {0, 0, 0, 0};
-    Offset = Operand(ZeroValue);
-    Size = Operand(ZeroValue);
-    return false;
-  }
-
+bool EVMMirBuilder::canUseGuaranteedMemoryRange(Operand &Offset,
+                                                Operand &Size) {
   const bool OffsetWasConst = Offset.isConstU64();
   const uint64_t ConstOffset = OffsetWasConst ? Offset.getConstValue()[0] : 0;
   const bool SizeWasConst = Size.isConstU64();
   const uint64_t ConstSize = SizeWasConst ? Size.getConstValue()[0] : 0;
+
   normalizeOffsetWithSize(Offset, Size);
-  if (AllowGuaranteedElision && OffsetWasConst && SizeWasConst &&
-      tryUseGuaranteedMinBytesExpansionElision(true, ConstOffset, ConstSize)) {
+  if (SizeWasConst && ConstSize == 0) {
     return true;
   }
+  if (!OffsetWasConst || !SizeWasConst) {
+    return false;
+  }
+  return tryUseGuaranteedMinBytesExpansionElision(true, ConstOffset, ConstSize);
+}
 
+void EVMMirBuilder::preExpandMemoryRange(Operand &Offset, Operand &Size) {
+  if (Size.isZeroConstant()) {
+    const U256Value ZeroValue = {0, 0, 0, 0};
+    Offset = Operand(ZeroValue);
+    Size = Operand(ZeroValue);
+    return;
+  }
+
+  normalizeOffsetWithSize(Offset, Size);
   MType *I64Type = &Ctx.I64Type;
   MInstruction *OffsetLow = extractKnownU64LowOperand(Offset);
   MInstruction *SizeLow = extractKnownU64LowOperand(Size);
@@ -6897,65 +6963,6 @@ bool EVMMirBuilder::preExpandMemoryRange(Operand &Offset, Operand &Size,
       false, CmpInstruction::Predicate::ICMP_ULT, I64Type, RequiredSize,
       OffsetLow);
   expandMemoryIR(RequiredSize, Overflow);
-  return false;
-}
-
-void EVMMirBuilder::preExpandKeccakTwoWordMemory(Operand &OffsetComponents) {
-  const bool OffsetWasConstU64 = OffsetComponents.isConstU64();
-  const uint64_t ConstOffset =
-      OffsetWasConstU64 ? OffsetComponents.getConstValue()[0] : 0;
-
-  MType *I64Type = &Ctx.I64Type;
-  if (OffsetWasConstU64) {
-    constexpr uint64_t KeccakTwoWordLength = 64;
-    const bool Overflowed = ConstOffset > std::numeric_limits<uint64_t>::max() -
-                                              KeccakTwoWordLength;
-    MInstruction *RequiredSize = createIntConstInstruction(
-        I64Type, Overflowed ? 0 : ConstOffset + KeccakTwoWordLength);
-    MInstruction *Overflow =
-        createIntConstInstruction(I64Type, Overflowed ? 1 : 0);
-    expandMemoryIR(RequiredSize, Overflow);
-    return;
-  }
-
-  Operand SizeComponents = createU256ConstOperand(intx::uint256{64});
-  normalizeOffsetWithSize(OffsetComponents, SizeComponents);
-
-  MInstruction *Offset = extractKnownU64LowOperand(OffsetComponents);
-  MInstruction *Length = createIntConstInstruction(I64Type, 64);
-  MInstruction *RequiredSize = createInstruction<BinaryInstruction>(
-      false, OP_add, I64Type, Offset, Length);
-  MInstruction *Overflow = createInstruction<CmpInstruction>(
-      false, CmpInstruction::Predicate::ICMP_ULT, I64Type, RequiredSize,
-      Offset);
-  expandMemoryIR(RequiredSize, Overflow);
-}
-
-bool EVMMirBuilder::preExpandCopyMemory(Operand &DestOffsetComponents,
-                                        Operand &SizeComponents) {
-  const bool DestWasConstU64 = DestOffsetComponents.isConstU64();
-  const uint64_t ConstDest =
-      DestWasConstU64 ? DestOffsetComponents.getConstValue()[0] : 0;
-  const bool SizeWasConstU64 = SizeComponents.isConstU64();
-  const uint64_t ConstSize =
-      SizeWasConstU64 ? SizeComponents.getConstValue()[0] : 0;
-
-  normalizeOffsetWithSize(DestOffsetComponents, SizeComponents);
-  if (DestWasConstU64 && SizeWasConstU64 &&
-      tryUseGuaranteedMinBytesExpansionElision(true, ConstDest, ConstSize)) {
-    return true;
-  }
-
-  MType *I64Type = &Ctx.I64Type;
-  MInstruction *DestOffset = extractKnownU64LowOperand(DestOffsetComponents);
-  MInstruction *Size = extractKnownU64LowOperand(SizeComponents);
-  MInstruction *RequiredSize = createInstruction<BinaryInstruction>(
-      false, OP_add, I64Type, DestOffset, Size);
-  MInstruction *Overflow = createInstruction<CmpInstruction>(
-      false, CmpInstruction::Predicate::ICMP_ULT, I64Type, RequiredSize,
-      DestOffset);
-  expandMemoryIR(RequiredSize, Overflow);
-  return false;
 }
 
 void EVMMirBuilder::chargeWordCopyGasIR(MInstruction *Size) {
@@ -7369,22 +7376,42 @@ void EVMMirBuilder::handleCallDataCopy(Operand DestOffsetComponents,
   const auto &RuntimeFunctions = getRuntimeFunctionTable();
   uint64_t Non64Value = std::numeric_limits<uint64_t>::max();
   RuntimeProofToken Proofs;
-  if (preExpandCopyMemory(DestOffsetComponents, SizeComponents)) {
+  const bool EmptyRange = SizeComponents.isZeroConstant();
+  const bool UsePreparedMemory =
+      canUseGuaranteedMemoryRange(DestOffsetComponents, SizeComponents);
+  if (UsePreparedMemory) {
 #ifdef ZEN_ENABLE_MULTIPASS_JIT_LOGGING
-    ++MemStats.CopyGuaranteedElisionCount;
+    if (!EmptyRange) {
+      ++MemStats.CopyGuaranteedElisionCount;
+    }
 #endif
+    Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
+    Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
+    MInstruction *Size = extractKnownU64LowOperand(SizeComponents);
+    chargeWordCopyGasIR(Size);
+    Proofs.establish(RuntimeProofRequirementFlag::DynamicGasCharged);
+    requireRuntimeHelperProofs(RuntimeMemoryHelperId::CallDataCopyNoExpand,
+                               Proofs);
   }
-  Proofs.establish(RuntimeProofRequirementFlag::LogicalSize);
-  Proofs.establish(RuntimeProofRequirementFlag::AccessRange);
-  MInstruction *Size = extractKnownU64LowOperand(SizeComponents);
-  chargeWordCopyGasIR(Size);
-  Proofs.establish(RuntimeProofRequirementFlag::DynamicGasCharged);
+
   normalizeOperandU64(OffsetComponents, &Non64Value);
-  requireRuntimeHelperProofs(RuntimeMemoryHelperId::CallDataCopyNoExpand,
-                             Proofs);
+#ifdef ZEN_ENABLE_EVM_GAS_REGISTER
+  if (!UsePreparedMemory) {
+    syncGasToMemory();
+  }
+#endif
   callRuntimeForWithErrorCheck<void, uint64_t, uint64_t, uint64_t>(
-      RuntimeFunctions.SetCallDataCopyNoExpand, DestOffsetComponents,
-      OffsetComponents, SizeComponents);
+      UsePreparedMemory ? RuntimeFunctions.SetCallDataCopyNoExpand
+                        : RuntimeFunctions.SetCallDataCopy,
+      DestOffsetComponents, OffsetComponents, SizeComponents);
+#ifdef ZEN_ENABLE_EVM_GAS_REGISTER
+  if (!UsePreparedMemory) {
+    reloadGasFromMemory();
+  }
+#endif
+  if (!UsePreparedMemory) {
+    reloadMemorySizeFromInstance();
+  }
 }
 
 void EVMMirBuilder::handleExtCodeCopy(Operand AddressComponents,
@@ -9740,6 +9767,9 @@ void EVMMirBuilder::expandMemoryIR(MInstruction *RequiredSize,
   // Charge memory expansion gas
   chargeMemoryExpansionGasIR(CurrentSize, AlignedSize);
 
+  // This token is a structural assertion: the dominating control flow has
+  // validated bounds and charged expansion gas before selecting the no-gas
+  // resize helper. It is not a recovered-range proof or a helper-choice gate.
   RuntimeProofToken Proofs;
   Proofs.establish(RuntimeProofRequirementFlag::DynamicGasCharged);
   Proofs.establish(RuntimeProofRequirementFlag::BoundsValidated);
