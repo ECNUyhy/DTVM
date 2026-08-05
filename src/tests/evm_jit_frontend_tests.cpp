@@ -702,6 +702,81 @@ TEST(EVMRuntimeMemoryHelperContractTest,
   }
 }
 
+TEST(EVMRuntimeMemoryHelperContractTest,
+     EveryPreparedHelperRejectsEachMissingObligation) {
+  using COMPILER::RuntimeMemoryHelperId;
+  using COMPILER::RuntimeProofRequirementFlag;
+
+  const auto ExpectExactRequirements =
+      [](RuntimeMemoryHelperId Helper,
+         std::initializer_list<RuntimeProofRequirementFlag> Requirements) {
+        const COMPILER::RuntimeMemoryHelperContract Contract =
+            COMPILER::getRuntimeMemoryHelperContract(Helper);
+        ASSERT_TRUE(Contract.Valid);
+
+        COMPILER::RuntimeProofToken Complete;
+        for (RuntimeProofRequirementFlag Requirement : Requirements) {
+          Complete.establish(Requirement);
+        }
+        EXPECT_TRUE(
+            COMPILER::satisfiesRuntimeMemoryHelperContract(Contract, Complete));
+
+        for (RuntimeProofRequirementFlag Missing : Requirements) {
+          COMPILER::RuntimeProofToken Incomplete;
+          for (RuntimeProofRequirementFlag Requirement : Requirements) {
+            if (Requirement != Missing) {
+              Incomplete.establish(Requirement);
+            }
+          }
+          EXPECT_FALSE(COMPILER::satisfiesRuntimeMemoryHelperContract(
+              Contract, Incomplete));
+        }
+      };
+
+  const auto PreparedRangeAndGas = {
+      RuntimeProofRequirementFlag::LogicalSize,
+      RuntimeProofRequirementFlag::AccessRange,
+      RuntimeProofRequirementFlag::DynamicGasCharged,
+  };
+  ExpectExactRequirements(RuntimeMemoryHelperId::CodeCopyNoExpand,
+                          PreparedRangeAndGas);
+  ExpectExactRequirements(RuntimeMemoryHelperId::CallDataCopyNoExpand,
+                          PreparedRangeAndGas);
+  ExpectExactRequirements(RuntimeMemoryHelperId::KeccakNoExpand,
+                          PreparedRangeAndGas);
+
+  const auto PreparedRangeAndOrder = {
+      RuntimeProofRequirementFlag::LogicalSize,
+      RuntimeProofRequirementFlag::AccessRange,
+      RuntimeProofRequirementFlag::OrderToken,
+  };
+  ExpectExactRequirements(RuntimeMemoryHelperId::TwoWordKeccakNoExpand,
+                          PreparedRangeAndOrder);
+  ExpectExactRequirements(RuntimeMemoryHelperId::ReturnNoExpand,
+                          PreparedRangeAndOrder);
+  ExpectExactRequirements(RuntimeMemoryHelperId::RevertNoExpand,
+                          PreparedRangeAndOrder);
+
+  ExpectExactRequirements(RuntimeMemoryHelperId::ExpandMemoryNoGas,
+                          {RuntimeProofRequirementFlag::DynamicGasCharged,
+                           RuntimeProofRequirementFlag::BoundsValidated,
+                           RuntimeProofRequirementFlag::OrderToken});
+  ExpectExactRequirements(RuntimeMemoryHelperId::CallNoExpand,
+                          {RuntimeProofRequirementFlag::LogicalSize,
+                           RuntimeProofRequirementFlag::CallArgumentsRange,
+                           RuntimeProofRequirementFlag::CallReturnRange,
+                           RuntimeProofRequirementFlag::OrderToken});
+}
+
+TEST(EVMRuntimeMemoryHelperContractTest, RejectsUnknownHelperFailClosed) {
+  const COMPILER::RuntimeMemoryHelperContract Contract =
+      COMPILER::getRuntimeMemoryHelperContract(
+          static_cast<COMPILER::RuntimeMemoryHelperId>(255));
+  COMPILER::RuntimeProofToken Empty;
+  EXPECT_FALSE(Contract.Valid);
+  EXPECT_FALSE(COMPILER::satisfiesRuntimeMemoryHelperContract(Contract, Empty));
+}
+
 TEST(EVMMemoryFactsBuilderTest, AttributesOpsToAnalyzerBlocks) {
   const std::vector<uint8_t> Bytecode = {
       OP_PUSH1, 0x01,     OP_PUSH1, 0x0b,      OP_JUMPI,  OP_PUSH1,
