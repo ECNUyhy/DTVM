@@ -11,6 +11,7 @@
 #include <cstring>
 #include <gtest/gtest.h>
 #include <intx/intx.hpp>
+#include <stdexcept>
 
 using namespace zen::evm;
 using namespace zen::utils;
@@ -87,9 +88,7 @@ TxIntrinsicCost computeTxIntrinsicCost(const evmc_revision Revision,
   return {IntrinsicCost, MinCost};
 }
 
-// Revision filter configuration
-// Set to EVMC_MAX_REVISION to run all tests, or a specific revision to filter
-evmc_revision getTargetRevision() {
+evmc_revision parseStateTestRevision(const std::string &RevisionName) {
   static const std::unordered_map<std::string, evmc_revision> RevisionMap = {
       {"ALL", EVMC_MAX_REVISION},
       {"Frontier", EVMC_FRONTIER},
@@ -98,6 +97,7 @@ evmc_revision getTargetRevision() {
       {"SpuriousDragon", EVMC_SPURIOUS_DRAGON},
       {"Byzantium", EVMC_BYZANTIUM},
       {"Constantinople", EVMC_CONSTANTINOPLE},
+      {"ConstantinopleFix", EVMC_PETERSBURG},
       {"Petersburg", EVMC_PETERSBURG},
       {"Istanbul", EVMC_ISTANBUL},
       {"Berlin", EVMC_BERLIN},
@@ -108,13 +108,37 @@ evmc_revision getTargetRevision() {
       {"Prague", EVMC_PRAGUE},
   };
 
+  const auto It = RevisionMap.find(RevisionName);
+  if (It == RevisionMap.end()) {
+    throw std::runtime_error(
+        "DTVM_TEST_REVISION must name an explicitly supported revision");
+  }
+  return It->second;
+}
+
+std::optional<evmc_revision>
+minimumRevisionForTypedTransaction(const uint8_t TransactionType) {
+  switch (TransactionType) {
+  case 0x01:
+    return EVMC_BERLIN;
+  case 0x02:
+    return EVMC_LONDON;
+  case 0x03:
+    return EVMC_CANCUN;
+  case 0x04:
+    return EVMC_PRAGUE;
+  default:
+    return std::nullopt;
+  }
+}
+
+// Revision filter configuration
+// Set to EVMC_MAX_REVISION to run all tests, or a specific revision to filter.
+evmc_revision getTargetRevision() {
+
   const char *EnvRevision = std::getenv("DTVM_TEST_REVISION");
   if (EnvRevision != nullptr) {
-    std::string RevisionStr = EnvRevision;
-    auto It = RevisionMap.find(RevisionStr);
-    if (It != RevisionMap.end()) {
-      return It->second;
-    }
+    return parseStateTestRevision(EnvRevision);
   }
   // Default: only test Cancun revision
   return EVMC_CANCUN;
@@ -152,6 +176,151 @@ RuntimeConfig buildRuntimeConfig() {
 #endif
 
   return Config;
+}
+
+TEST(EVMStateTransactionRulesTest, RevisionFilterUsesCanonicalForkAliases) {
+  EXPECT_EQ(parseStateTestRevision("ConstantinopleFix"), EVMC_PETERSBURG);
+  EXPECT_EQ(parseStateTestRevision("Petersburg"), EVMC_PETERSBURG);
+  EXPECT_THROW(parseStateTestRevision("UnknownFork"), std::runtime_error);
+}
+
+TEST(EVMStateTransactionRulesTest, TypedTransactionsRespectActivationForks) {
+  EXPECT_EQ(minimumRevisionForTypedTransaction(0x01), EVMC_BERLIN);
+  EXPECT_EQ(minimumRevisionForTypedTransaction(0x02), EVMC_LONDON);
+  EXPECT_EQ(minimumRevisionForTypedTransaction(0x03), EVMC_CANCUN);
+  EXPECT_EQ(minimumRevisionForTypedTransaction(0x04), EVMC_PRAGUE);
+  EXPECT_FALSE(minimumRevisionForTypedTransaction(0x00).has_value());
+  EXPECT_FALSE(minimumRevisionForTypedTransaction(0x7f).has_value());
+}
+
+TEST(EVMStateTransactionRulesTest, UsesRevisionAwareRefundCaps) {
+  EXPECT_EQ(ZenMockedEVMHost::refundLimitForRevision(EVMC_FRONTIER, 100), 50);
+  EXPECT_EQ(ZenMockedEVMHost::refundLimitForRevision(EVMC_BERLIN, 100), 50);
+  EXPECT_EQ(ZenMockedEVMHost::refundLimitForRevision(EVMC_LONDON, 100), 20);
+  EXPECT_EQ(ZenMockedEVMHost::refundLimitForRevision(EVMC_CANCUN, 100), 20);
+
+  EXPECT_EQ(ZenMockedEVMHost::refundLimitForRevision(EVMC_BERLIN, 1), 0);
+  EXPECT_EQ(ZenMockedEVMHost::refundLimitForRevision(EVMC_LONDON, 4), 0);
+  EXPECT_EQ(ZenMockedEVMHost::refundLimitForRevision(EVMC_LONDON, 5), 1);
+}
+
+TEST(EVMStateTransactionRulesTest, TopLevelExecutionUsesRequestedGasSchedule) {
+  auto executeCall = [](const evmc_revision Revision) {
+    RuntimeConfig RuntimeConfig;
+    RuntimeConfig.Mode = common::RunMode::InterpMode;
+    RuntimeConfig.EnableEvmGasMetering = true;
+
+    auto Host = std::make_unique<ZenMockedEVMHost>();
+    auto Runtime = Runtime::newEVMRuntime(RuntimeConfig, Host.get());
+    EXPECT_TRUE(Runtime != nullptr);
+    if (!Runtime) {
+      return uint64_t{0};
+    }
+    Host->setRuntime(Runtime.get());
+
+    const std::array<uint8_t, 17> Bytecode = {
+        0x60, 0x00, // output size
+        0x60, 0x00, // output offset
+        0x60, 0x00, // input size
+        0x60, 0x00, // input offset
+        0x60, 0x00, // value
+        0x60, 0xff, // callee (cold after Berlin)
+        0x60, 0x00, // forwarded gas
+        0xf1,       // CALL: revision-dependent static/base gas
+        0x50,       // POP success flag
+        0x00,       // STOP
+    };
+    evmc_message Message{};
+    Message.kind = EVMC_CALL;
+    Message.gas = 100000;
+    Message.sender.bytes[19] = 0x01;
+    Message.recipient.bytes[19] = 0x02;
+
+    ZenMockedEVMHost::TransactionExecutionConfig ExecutionConfig;
+    ExecutionConfig.ModuleName = "revision_gas_schedule";
+    ExecutionConfig.Bytecode = Bytecode.data();
+    ExecutionConfig.BytecodeSize = Bytecode.size();
+    ExecutionConfig.Message = Message;
+    ExecutionConfig.GasLimit = static_cast<uint64_t>(Message.gas);
+    ExecutionConfig.Revision = Revision;
+
+    const auto Result = Host->executeTransaction(ExecutionConfig);
+    EXPECT_TRUE(Result.Success) << Result.ErrorMessage;
+    EXPECT_EQ(Result.Status, EVMC_SUCCESS);
+    return Result.GasUsed;
+  };
+
+  const uint64_t FrontierGas = executeCall(EVMC_FRONTIER);
+  const uint64_t CancunGas = executeCall(EVMC_CANCUN);
+  EXPECT_EQ(FrontierGas, 25063u);
+  EXPECT_EQ(CancunGas, 2623u);
+}
+
+TEST(EVMStateTransactionRulesTest, ModExpUsesRevisionSpecificEIPGasFormula) {
+  std::array<uint8_t, 96> EmptyLengths{};
+  evmc_message Message{};
+  Message.kind = EVMC_CALL;
+  Message.gas = 1000;
+  Message.input_data = EmptyLengths.data();
+  Message.input_size = EmptyLengths.size();
+
+  std::vector<uint8_t> ReturnData;
+  const auto ByzantiumResult =
+      precompile::executeModExp(Message, EVMC_BYZANTIUM, ReturnData);
+  EXPECT_EQ(ByzantiumResult.status_code, EVMC_SUCCESS);
+  EXPECT_EQ(ByzantiumResult.gas_left, 1000);
+
+  const auto BerlinResult =
+      precompile::executeModExp(Message, EVMC_BERLIN, ReturnData);
+  EXPECT_EQ(BerlinResult.status_code, EVMC_SUCCESS);
+  EXPECT_EQ(BerlinResult.gas_left, 800);
+}
+
+TEST(EVMStateTransactionRulesTest, ZeroPriceCoinbaseTouchFollowsForkRules) {
+  auto coinbaseMaterialized = [](const evmc_revision Revision) {
+    RuntimeConfig RuntimeConfig;
+    RuntimeConfig.Mode = common::RunMode::InterpMode;
+    RuntimeConfig.EnableEvmGasMetering = true;
+
+    auto Host = std::make_unique<ZenMockedEVMHost>();
+    Host->tx_context.block_coinbase.bytes[19] = 0x03;
+    auto Runtime = Runtime::newEVMRuntime(RuntimeConfig, Host.get());
+    EXPECT_TRUE(Runtime != nullptr);
+    if (!Runtime) {
+      return false;
+    }
+    Host->setRuntime(Runtime.get());
+
+    const std::array<uint8_t, 4> Bytecode = {
+        0x60, 0x00, // PUSH1 0
+        0x50,       // POP
+        0x00,       // STOP
+    };
+    evmc_message Message{};
+    Message.kind = EVMC_CALL;
+    Message.gas = 100000;
+    Message.sender.bytes[19] = 0x01;
+    Message.recipient.bytes[19] = 0x02;
+
+    ZenMockedEVMHost::TransactionExecutionConfig ExecutionConfig;
+    ExecutionConfig.ModuleName = "zero_price_coinbase_touch";
+    ExecutionConfig.Bytecode = Bytecode.data();
+    ExecutionConfig.BytecodeSize = Bytecode.size();
+    ExecutionConfig.Message = Message;
+    ExecutionConfig.GasLimit = static_cast<uint64_t>(Message.gas);
+    ExecutionConfig.Revision = Revision;
+
+    const auto Result = Host->executeTransaction(ExecutionConfig);
+    EXPECT_TRUE(Result.Success) << Result.ErrorMessage;
+    EXPECT_EQ(Result.Status, EVMC_SUCCESS);
+    return Host->accounts.find(Host->tx_context.block_coinbase) !=
+           Host->accounts.end();
+  };
+
+  EXPECT_TRUE(coinbaseMaterialized(EVMC_FRONTIER));
+  EXPECT_TRUE(coinbaseMaterialized(EVMC_HOMESTEAD));
+  EXPECT_FALSE(coinbaseMaterialized(EVMC_SPURIOUS_DRAGON));
+  EXPECT_FALSE(coinbaseMaterialized(EVMC_CANCUN));
 }
 
 std::string getDefaultTestDir() {
@@ -198,10 +367,16 @@ ExecutionResult executeStateTest(const StateTestFixture &Fixture,
         Fixture.Transaction &&
         Fixture.Transaction->HasMember("authorizationList") &&
         (*Fixture.Transaction)["authorizationList"].IsArray();
-    const bool IsType4Tx = !ExpectedResult.ExpectedTxBytes.empty() &&
-                           ExpectedResult.ExpectedTxBytes[0] == 0x04;
-    if (Revision < EVMC_PRAGUE && (HasAuthorizationListField || IsType4Tx)) {
+    if (Revision < EVMC_PRAGUE && HasAuthorizationListField) {
       return MaybeReturnInvalid("Type 4 transaction pre-fork");
+    }
+    if (!ExpectedResult.ExpectedTxBytes.empty()) {
+      const uint8_t TransactionType = ExpectedResult.ExpectedTxBytes[0];
+      const auto MinimumRevision =
+          minimumRevisionForTypedTransaction(TransactionType);
+      if (MinimumRevision && Revision < *MinimumRevision) {
+        return MaybeReturnInvalid("Typed transaction pre-fork");
+      }
     }
 
     const TxIntrinsicCost IntrinsicCost = computeTxIntrinsicCost(Revision, PT);
@@ -672,7 +847,8 @@ TEST_P(EVMStateTest, ExecutesStateTest) {
 INSTANTIATE_TEST_SUITE_P(ExecuteAllStateTests, EVMStateTest,
                          ::testing::ValuesIn(getStateTestParams()),
                          [](const auto &Info) {
-                           return sanitizeTestName(Info.param.CaseName);
+                           return sanitizeTestName(Info.param.CaseName) +
+                                  "_Case_" + std::to_string(Info.index);
                          });
 
 } // anonymous namespace
