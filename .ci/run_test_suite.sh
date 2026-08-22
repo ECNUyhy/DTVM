@@ -340,7 +340,8 @@ for STACK_TYPE in ${STACK_TYPES[@]}; do
             python3 tools/eest_fixture_manifest.py "${EEST_MANIFEST_ARGS[@]}" \
                 --output "$EVMONE_STATETEST_RESULTS_DIR/inventory.json"
 
-            DTVM_COMMIT=$(git -c safe.directory="$WORKSPACE_ROOT" rev-parse HEAD)
+            git config --global --add safe.directory "$WORKSPACE_ROOT"
+            DTVM_COMMIT=$(git rev-parse HEAD)
             export LD_LIBRARY_PATH="$WORKSPACE_ROOT/build/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
             for EVMONE_MODE in multipass interpreter; do
                 VM_ARG="${DTVM_VM_SO},mode=${EVMONE_MODE},enable_gas_metering=true"
