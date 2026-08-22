@@ -82,6 +82,11 @@ case $TestSuite in
         ;;
     "evmtestsuite")
         CMAKE_OPTIONS="$CMAKE_OPTIONS -DZEN_ENABLE_SPEC_TEST=ON -DZEN_ENABLE_CHECKED_ARITHMETIC=ON -DZEN_ENABLE_EVM=ON"
+        # The lightweight in-tree fixture snapshot has no Osaka post section.
+        # Keep this historical regression suite explicit while the separate
+        # pinned EEST job validates every applicable revision through Osaka.
+        EVM_STATE_TEST_REVISION=${EVM_STATE_TEST_REVISION:-Cancun}
+        export EVM_STATE_TEST_REVISION
         ;;
     "evmrealsuite")
         CMAKE_OPTIONS="$CMAKE_OPTIONS -DZEN_ENABLE_SPEC_TEST=ON -DZEN_ENABLE_CHECKED_ARITHMETIC=ON -DZEN_ENABLE_EVM=ON"
@@ -197,6 +202,7 @@ for STACK_TYPE in ${STACK_TYPES[@]}; do
         "evmonestatetestsuite")
             EVMONE_REPO=${EVMONE_REPO:-https://github.com/DTVMStack/evmone.git}
             EVMONE_BRANCH=${EVMONE_BRANCH:-for_test}
+            EVMONE_COMMIT=${EVMONE_COMMIT:-a4a0e47aff903a47a6be133c67ad106c706fe566}
             EVMONE_DIR=${EVMONE_DIR:-evmone-statetest}
             EVMONE_MODE_TIMEOUT_SECONDS=${EVMONE_MODE_TIMEOUT_SECONDS:-5400}
             WORKSPACE_ROOT=$PWD
@@ -237,6 +243,11 @@ for STACK_TYPE in ${STACK_TYPES[@]}; do
             if [ ! -d "$EVMONE_DIR" ]; then
                 git clone --depth 1 --recurse-submodules -b "$EVMONE_BRANCH" "$EVMONE_REPO" "$EVMONE_DIR"
             fi
+            if ! git -C "$EVMONE_DIR" cat-file -e "$EVMONE_COMMIT^{commit}" 2>/dev/null; then
+                git -C "$EVMONE_DIR" fetch --depth 1 origin "$EVMONE_COMMIT"
+            fi
+            git -C "$EVMONE_DIR" checkout --detach "$EVMONE_COMMIT"
+            git -C "$EVMONE_DIR" submodule update --init --recursive
             cp build/lib/* "$EVMONE_DIR"/
             if [ ! -f "$EVMONE_DIR/libdtvmapi.so" ]; then
                 DTVM_SO_VERSIONED=$(find "$EVMONE_DIR" -maxdepth 1 -type f -name "libdtvmapi.so.*" | head -n1)
@@ -330,12 +341,8 @@ for STACK_TYPE in ${STACK_TYPES[@]}; do
                 --output "$EVMONE_STATETEST_RESULTS_DIR/inventory.json"
 
             export LD_LIBRARY_PATH="$WORKSPACE_ROOT/build/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-            PGJ_OPTS=",profile_guided_jit=true,jit_trigger_calls=1,jit_trigger_gas=1,ring_buffer_capacity=1"
             for EVMONE_MODE in multipass interpreter; do
                 VM_ARG="${DTVM_VM_SO},mode=${EVMONE_MODE},enable_gas_metering=true"
-                if [[ "$EVMONE_MODE" == "multipass" ]]; then
-                    VM_ARG="${VM_ARG}${PGJ_OPTS}"
-                fi
                 echo "Running all pinned EEST state cases in mode=${EVMONE_MODE}"
                 if [ -n "$EVMONE_MODE_TIMEOUT_SECONDS" ]; then
                     timeout --foreground "$EVMONE_MODE_TIMEOUT_SECONDS" env \

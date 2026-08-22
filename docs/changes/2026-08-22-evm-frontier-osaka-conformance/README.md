@@ -44,6 +44,7 @@ The frozen external oracle is:
 - Asset: `fixtures_develop.tar.gz`
 - URL: `https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_develop.tar.gz`
 - SHA-256: `3e2b02d49fe903eda4fd8caca5cbf0d139c470e97e1de9a85299b1b034f97099`
+- State-test driver: `DTVMStack/evmone@a4a0e47aff903a47a6be133c67ad106c706fe566`
 
 The release's `fixtures_stable.tar.gz` asset is not sufficient for this
 change: inspection of its state-test `post` keys found Prague but no Osaka
@@ -170,11 +171,13 @@ passed, failed, errored, and excluded counts.
 
 Make the state-test runner ignore the workflow's legacy `fork_Cancun` name
 filter, acquire the pinned corpus, and perform two unfiltered full-corpus runs,
-one per DTVM execution mode. Record the result in machine-readable manifests
-and the GitHub job summary. Preserve existing interpreter, multipass
-release/debug, gas-register, evmone unit, fallback, and performance regression
-jobs. CI may cache the archive by its digest but must verify the digest on every
-restoration.
+one per DTVM execution mode. Use deterministic multipass without asynchronous
+profile-guided recompilation; the separate profile-guided JIT job retains that
+coverage. Pin the evmone state-test driver commit as well as the fixture corpus.
+Record the result in machine-readable manifests and the GitHub job summary.
+Preserve existing interpreter, multipass release/debug, gas-register, evmone
+unit, fallback, and performance regression jobs. CI may cache the archive by
+its digest but must verify the digest on every restoration.
 
 ## Implementation Plan
 
@@ -234,7 +237,7 @@ Both acceptance runs loaded the same 63,556-case corpus:
 | DTVM mode | Passed | Failed | Errored | Excluded |
 | --- | ---: | ---: | ---: | ---: |
 | interpreter | 63,556 | 0 | 0 | 0 |
-| multipass with profile-guided JIT | 63,556 | 0 | 0 | 0 |
+| multipass | 63,556 | 0 | 0 | 0 |
 
 ### Commit Strategy
 
