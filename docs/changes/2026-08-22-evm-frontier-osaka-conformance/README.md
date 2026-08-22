@@ -18,7 +18,7 @@ claim:
 
 > DTVM supports the EVM execution semantics of every Ethereum mainnet revision
 > from Frontier through Osaka under the EVMC execution boundary, validated in
-> interpreter and multipass modes against the applicable EEST v5.4.0 stable
+> interpreter and multipass modes against the applicable EEST v5.4.0 develop
 > state-test cases.
 
 The claim covers VM execution, revision-gated opcodes, precompile calls handled
@@ -39,9 +39,15 @@ The frozen external oracle is:
 
 - Repository: `ethereum/execution-spec-tests`
 - Release: `v5.4.0` (final Osaka release)
-- Asset: `fixtures_stable.tar.gz`
-- URL: `https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_stable.tar.gz`
-- SHA-256: `92cf1b47ad12fb27163261fc3c1cea5df72439cab507983d06b56c94f8741909`
+- Asset: `fixtures_develop.tar.gz`
+- URL: `https://github.com/ethereum/execution-spec-tests/releases/download/v5.4.0/fixtures_develop.tar.gz`
+- SHA-256: `3e2b02d49fe903eda4fd8caca5cbf0d139c470e97e1de9a85299b1b034f97099`
+
+The release's `fixtures_stable.tar.gz` asset is not sufficient for this
+change: inspection of its state-test `post` keys found Prague but no Osaka
+cases. The pinned `fixtures_develop.tar.gz` asset from the same immutable final
+Osaka release contains both Prague and Osaka cases. "Develop" is the upstream
+asset name, not a mutable branch or URL in this design.
 
 Mutable `latest` or branch-qualified fixture URLs are not valid evidence for
 the final PR or paper artifact.
@@ -135,8 +141,13 @@ behavior as an internal DTVM implementation.
 
 ### Fixture Runner and Evidence
 
-Download the pinned stable archive outside the source tree, verify its digest,
-and run each mainnet revision independently. The runner must fail when a
+Download the pinned develop archive outside the source tree, verify its digest,
+and run each mainnet revision independently through `evmone-statetest` with
+DTVM loaded as the external EVMC VM. This keeps execution-client state
+transition and precompile responsibilities in the test driver while testing
+DTVM's VM-visible execution and gas behavior at the EVMC boundary. The
+repository's lightweight state-test host remains useful for focused regression
+tests, but is not the full-conformance oracle. The runner must fail when a
 requested revision has no discovered cases, when a fork label is unknown, or
 when accounting does not satisfy:
 
@@ -167,11 +178,11 @@ digest on every restoration.
 
 ### Phase 1: Fail-closed revision coverage
 
-- [ ] Add failing tests for Osaka mapping, unknown-fork rejection, CLI Prague
+- [x] Add failing tests for Osaka mapping, unknown-fork rejection, CLI Prague
   selection, and explicit default semantics.
-- [ ] Implement one canonical mapping and propagate Osaka through all existing
+- [x] Implement one canonical mapping and propagate Osaka through all existing
   state-test selection paths.
-- [ ] Advance and document the default revision after explicit-revision tests
+- [x] Advance and document the default revision after explicit-revision tests
   protect historical execution.
 
 ### Phase 2: Prague and Osaka behavior
