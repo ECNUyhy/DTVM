@@ -194,4 +194,51 @@ digest on every restoration.
 - [ ] Update module specifications, the PR title/body, and the release note to
   match the verified behavior and evidence.
 
+### Commit Strategy
+
+Use as many Conventional Commits as needed to keep each change independently
+reviewable and reversible. Prefer one logical commit for each completed test
+and implementation boundary or CI/evidence unit. Every implementation commit
+must leave the branch buildable and include or reference the regression that
+proves its behavior. There is no fixed maximum commit count for PR #600.
+
 ## Verification Gates
+
+The implementation is complete only when all conditions hold:
+
+1. The pinned archive digest matches the value above.
+2. Every mainnet revision from Frontier through Osaka discovers applicable
+   fixture cases in both interpreter and multipass modes.
+3. Every applicable case passes in both modes: zero failures and zero errors.
+4. There are zero unexplained skips; every out-of-scope fixture is listed with
+   a boundary-based reason and excluded before the applicable denominator.
+5. Focused activation-boundary tests pass immediately before and at Prague and
+   Osaka for every implemented rule.
+6. Existing Cancun and historical-fork tests remain green with explicit
+   revisions.
+7. Formatting, `git diff --check`, commit lint, builds, unit tests, fallback,
+   differential tests, and existing performance-regression gates pass.
+8. The evidence manifest is reproducible from documented commands at the PR
+   head commit.
+
+## Compatibility Notes
+
+The default moves to Osaka so an unspecified revision follows the current
+mainnet EVM revision represented by the frozen oracle. Consumers that need
+Cancun or another historical fork must request it explicitly. Unknown textual
+fork names become hard errors rather than inheriting a default.
+
+## Risks
+
+- **Scope inflation in PR #600**: Group work into logical Conventional Commits
+  aligned with the implementation phases; do not impose an artificial commit
+  limit or mix unrelated refactoring into the branch.
+- **False-green coverage**: Fail on unknown forks, empty selections, accounting
+  mismatches, digest mismatches, and DTVM-caused skips.
+- **Fixture drift**: Use the immutable v5.4.0 URL and SHA-256, never `latest`.
+- **Host/VM claim confusion**: Tag host-provided precompile behavior in the
+  evidence manifest and retain the EVMC-boundary wording in the paper.
+- **Interpreter/JIT divergence**: Execute the identical fixture identifiers in
+  both modes and treat any result mismatch as a failure.
+- **Default-revision compatibility**: Protect every historical revision with
+  explicit-revision regressions and document the behavior change.
