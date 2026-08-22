@@ -168,11 +168,13 @@ passed, failed, errored, and excluded counts.
 
 ### CI
 
-Replace the misleading name-filtered, mutable-fixture state-test job with
-pinned acquisition and two unfiltered full-corpus runs, one per DTVM execution
-mode. Preserve existing interpreter, multipass release/debug, gas-register,
-evmone unit, fallback, and performance regression jobs. CI may cache the
-archive by its digest but must verify the digest on every restoration.
+Make the state-test runner ignore the workflow's legacy `fork_Cancun` name
+filter, acquire the pinned corpus, and perform two unfiltered full-corpus runs,
+one per DTVM execution mode. Record the result in machine-readable manifests
+and the GitHub job summary. Preserve existing interpreter, multipass
+release/debug, gas-register, evmone unit, fallback, and performance regression
+jobs. CI may cache the archive by its digest but must verify the digest on every
+restoration.
 
 ## Implementation Plan
 
@@ -197,7 +199,7 @@ archive by its digest but must verify the digest on every restoration.
 ### Phase 3: Reproducible evidence and CI
 
 - [x] Pin the fixture URL, archive SHA-256, and semantic case-set SHA-256 in the
-  runner and workflow.
+  runner used by the existing state-test workflow.
 - [x] Add fail-closed corpus validation and machine-readable manifests.
 - [x] Run the complete applicable EEST corpus in both modes and record exact
   per-revision counts.
