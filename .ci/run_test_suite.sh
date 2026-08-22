@@ -213,6 +213,14 @@ for STACK_TYPE in ${STACK_TYPES[@]}; do
                 ls -la "$WORKSPACE_ROOT/build/lib" | sed -n '1,120p'
                 exit 1
             fi
+            if command -v readelf >/dev/null 2>&1; then
+                DTVM_GNU_STACK_FLAGS=$(readelf -W -l "$DTVM_VM_SO" | \
+                    awk '$1 == "GNU_STACK" { print $7 }')
+                if [ -z "$DTVM_GNU_STACK_FLAGS" ] || [[ "$DTVM_GNU_STACK_FLAGS" == *E* ]]; then
+                    echo "DTVM VM library requires an executable stack: $DTVM_VM_SO"
+                    exit 1
+                fi
+            fi
             ln -sf "$DTVM_VM_SO" "$WORKSPACE_ROOT/libdtvmapi.so"
 
             if [ ! -d "$EVMONE_DIR" ]; then
