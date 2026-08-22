@@ -7,11 +7,13 @@
 #include "evm_test_host.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdlib>
 #include <cstring>
 #include <gtest/gtest.h>
 #include <intx/intx.hpp>
 #include <stdexcept>
+#include <utility>
 
 using namespace zen::evm;
 using namespace zen::utils;
@@ -156,12 +158,32 @@ RuntimeConfig buildRuntimeConfig() {
   return Config;
 }
 
-TEST(EVMStateTransactionRulesTest, RevisionFilterUsesCanonicalForkAliases) {
+TEST(EVMStateTransactionRulesTest, RevisionFilterMapsAllMainnetForks) {
+  const std::array<std::pair<const char *, evmc_revision>, 15> Revisions = {{
+      {"Frontier", EVMC_FRONTIER},
+      {"Homestead", EVMC_HOMESTEAD},
+      {"TangerineWhistle", EVMC_TANGERINE_WHISTLE},
+      {"SpuriousDragon", EVMC_SPURIOUS_DRAGON},
+      {"Byzantium", EVMC_BYZANTIUM},
+      {"Constantinople", EVMC_CONSTANTINOPLE},
+      {"Petersburg", EVMC_PETERSBURG},
+      {"Istanbul", EVMC_ISTANBUL},
+      {"Berlin", EVMC_BERLIN},
+      {"London", EVMC_LONDON},
+      {"Paris", EVMC_PARIS},
+      {"Shanghai", EVMC_SHANGHAI},
+      {"Cancun", EVMC_CANCUN},
+      {"Prague", EVMC_PRAGUE},
+      {"Osaka", EVMC_OSAKA},
+  }};
+  for (const auto &[Name, Revision] : Revisions) {
+    SCOPED_TRACE(Name);
+    EXPECT_EQ(parseStateTestRevision(Name), Revision);
+    EXPECT_EQ(mapForkToRevision(Name), Revision);
+  }
+
   EXPECT_EQ(parseStateTestRevision("ConstantinopleFix"), EVMC_PETERSBURG);
-  EXPECT_EQ(parseStateTestRevision("Petersburg"), EVMC_PETERSBURG);
-  EXPECT_EQ(parseStateTestRevision("Prague"), EVMC_PRAGUE);
-  EXPECT_EQ(parseStateTestRevision("Osaka"), EVMC_OSAKA);
-  EXPECT_EQ(mapForkToRevision("Osaka"), EVMC_OSAKA);
+  EXPECT_EQ(mapForkToRevision("ConstantinopleFix"), EVMC_PETERSBURG);
   EXPECT_THROW(parseStateTestRevision("UnknownFork"), std::runtime_error);
   EXPECT_THROW(mapForkToRevision("UnknownFork"), std::runtime_error);
 }
