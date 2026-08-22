@@ -85,8 +85,8 @@ case $TestSuite in
         # The lightweight in-tree fixture snapshot has no Osaka post section.
         # Keep this historical regression suite explicit while the separate
         # pinned EEST job validates every applicable revision through Osaka.
-        EVM_STATE_TEST_REVISION=${EVM_STATE_TEST_REVISION:-Cancun}
-        export EVM_STATE_TEST_REVISION
+        DTVM_TEST_REVISION=${DTVM_TEST_REVISION:-Cancun}
+        export DTVM_TEST_REVISION
         ;;
     "evmrealsuite")
         CMAKE_OPTIONS="$CMAKE_OPTIONS -DZEN_ENABLE_SPEC_TEST=ON -DZEN_ENABLE_CHECKED_ARITHMETIC=ON -DZEN_ENABLE_EVM=ON"
