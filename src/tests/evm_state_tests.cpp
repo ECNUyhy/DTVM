@@ -89,31 +89,10 @@ TxIntrinsicCost computeTxIntrinsicCost(const evmc_revision Revision,
 }
 
 evmc_revision parseStateTestRevision(const std::string &RevisionName) {
-  static const std::unordered_map<std::string, evmc_revision> RevisionMap = {
-      {"ALL", EVMC_MAX_REVISION},
-      {"Frontier", EVMC_FRONTIER},
-      {"Homestead", EVMC_HOMESTEAD},
-      {"TangerineWhistle", EVMC_TANGERINE_WHISTLE},
-      {"SpuriousDragon", EVMC_SPURIOUS_DRAGON},
-      {"Byzantium", EVMC_BYZANTIUM},
-      {"Constantinople", EVMC_CONSTANTINOPLE},
-      {"ConstantinopleFix", EVMC_PETERSBURG},
-      {"Petersburg", EVMC_PETERSBURG},
-      {"Istanbul", EVMC_ISTANBUL},
-      {"Berlin", EVMC_BERLIN},
-      {"London", EVMC_LONDON},
-      {"Paris", EVMC_PARIS},
-      {"Shanghai", EVMC_SHANGHAI},
-      {"Cancun", EVMC_CANCUN},
-      {"Prague", EVMC_PRAGUE},
-  };
-
-  const auto It = RevisionMap.find(RevisionName);
-  if (It == RevisionMap.end()) {
-    throw std::runtime_error(
-        "DTVM_TEST_REVISION must name an explicitly supported revision");
+  if (RevisionName == "ALL") {
+    return EVMC_MAX_REVISION;
   }
-  return It->second;
+  return mapForkToRevision(RevisionName);
 }
 
 std::optional<evmc_revision>
@@ -140,8 +119,7 @@ evmc_revision getTargetRevision() {
   if (EnvRevision != nullptr) {
     return parseStateTestRevision(EnvRevision);
   }
-  // Default: only test Cancun revision
-  return EVMC_CANCUN;
+  return zen::evm::DEFAULT_REVISION;
 }
 
 RuntimeConfig buildRuntimeConfig() {
@@ -181,7 +159,45 @@ RuntimeConfig buildRuntimeConfig() {
 TEST(EVMStateTransactionRulesTest, RevisionFilterUsesCanonicalForkAliases) {
   EXPECT_EQ(parseStateTestRevision("ConstantinopleFix"), EVMC_PETERSBURG);
   EXPECT_EQ(parseStateTestRevision("Petersburg"), EVMC_PETERSBURG);
+  EXPECT_EQ(parseStateTestRevision("Prague"), EVMC_PRAGUE);
+  EXPECT_EQ(parseStateTestRevision("Osaka"), EVMC_OSAKA);
+  EXPECT_EQ(mapForkToRevision("Osaka"), EVMC_OSAKA);
   EXPECT_THROW(parseStateTestRevision("UnknownFork"), std::runtime_error);
+  EXPECT_THROW(mapForkToRevision("UnknownFork"), std::runtime_error);
+}
+
+TEST(EVMStateTransactionRulesTest, DefaultExecutionAcceptsOsakaClz) {
+  RuntimeConfig RuntimeConfig;
+  RuntimeConfig.Mode = common::RunMode::InterpMode;
+  RuntimeConfig.EnableEvmGasMetering = true;
+
+  auto Host = std::make_unique<ZenMockedEVMHost>();
+  auto Runtime = Runtime::newEVMRuntime(RuntimeConfig, Host.get());
+  ASSERT_TRUE(Runtime != nullptr);
+  Host->setRuntime(Runtime.get());
+
+  const std::array<uint8_t, 5> Bytecode = {
+      0x60, 0x00, // PUSH1 0
+      0x1e,       // CLZ (Osaka)
+      0x50,       // POP
+      0x00,       // STOP
+  };
+  evmc_message Message{};
+  Message.kind = EVMC_CALL;
+  Message.gas = 100000;
+  Message.sender.bytes[19] = 0x01;
+  Message.recipient.bytes[19] = 0x02;
+
+  ZenMockedEVMHost::TransactionExecutionConfig ExecutionConfig;
+  ExecutionConfig.ModuleName = "default_osaka_clz";
+  ExecutionConfig.Bytecode = Bytecode.data();
+  ExecutionConfig.BytecodeSize = Bytecode.size();
+  ExecutionConfig.Message = Message;
+  ExecutionConfig.GasLimit = static_cast<uint64_t>(Message.gas);
+
+  const auto Result = Host->executeTransaction(ExecutionConfig);
+  EXPECT_TRUE(Result.Success) << Result.ErrorMessage;
+  EXPECT_EQ(Result.Status, EVMC_SUCCESS);
 }
 
 TEST(EVMStateTransactionRulesTest, TypedTransactionsRespectActivationForks) {

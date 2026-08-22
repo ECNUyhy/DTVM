@@ -13,7 +13,7 @@ constexpr auto MAXSTACK = 1024;
 // Ethereum EVM uses UINT32_MAX for memory size, with gas-based limiting
 constexpr uint64_t MAX_REQUIRED_MEMORY_SIZE = 16 * 1024 * 1024; // 16MB
 
-constexpr evmc_revision DEFAULT_REVISION = EVMC_CANCUN;
+constexpr evmc_revision DEFAULT_REVISION = EVMC_OSAKA;
 
 // Transaction intrinsic gas constants
 constexpr auto BASIC_EXECUTION_COST = 21000;
