@@ -28,12 +28,14 @@ not claim that DTVM is a full Ethereum consensus or networking client.
 
 ## Motivation
 
-The current continuous-integration state-test job filters only Cancun. DTVM
-already has partial Prague and Osaka code and imported tests, but partial code
-presence is not evidence of conformance. Unknown state-test fork labels can
-also fall back to the Cancun default, which can produce false-green results.
-For a contemporary systems evaluation, DTVM needs reproducible evidence for
-all mainnet EVM revisions through the current Osaka revision.
+The previous continuous-integration state-test job passed `fork_Cancun` to
+evmone's `-k` option. That option filters top-level test names rather than
+protocol revisions, so it did not establish Cancun-only or complete fork
+coverage. DTVM also had partial Prague and Osaka code and imported tests, but
+partial code presence is not evidence of conformance. Unknown state-test fork
+labels could fall back to the Cancun default, which could produce false-green
+results. For a contemporary systems evaluation, DTVM needs reproducible
+evidence for all mainnet EVM revisions through the current Osaka revision.
 
 The frozen external oracle is:
 
@@ -142,37 +144,35 @@ behavior as an internal DTVM implementation.
 ### Fixture Runner and Evidence
 
 Download the pinned develop archive outside the source tree, verify its digest,
-and run each mainnet revision independently through `evmone-statetest` with
-DTVM loaded as the external EVMC VM. This keeps execution-client state
-transition and precompile responsibilities in the test driver while testing
-DTVM's VM-visible execution and gas behavior at the EVMC boundary. The
-repository's lightweight state-test host remains useful for focused regression
-tests, but is not the full-conformance oracle. The runner must fail when a
-requested revision has no discovered cases, when a fork label is unknown, or
-when accounting does not satisfy:
+and run every discovered state-test case in one unfiltered
+`evmone-statetest` invocation per mode, with DTVM loaded as the external EVMC
+VM. Explicitly override evmone's default slow-test exclusions. This keeps
+execution-client state transition and precompile responsibilities in the test
+driver while testing DTVM's VM-visible execution and gas behavior at the EVMC
+boundary. The repository's lightweight state-test host remains useful for
+focused regression tests, but is not the full-conformance oracle.
 
-`loaded = applicable + explicitly_out_of_scope`
+The EEST v5.4.0 corpus has non-empty `post` sections for 12 canonical fork
+labels. It does not publish dedicated sections for Tangerine Whistle, Spurious
+Dragon, or the pre-Petersburg Constantinople revision; those EVMC revisions
+remain protected by explicit revision-selection and historical regression
+tests. `ConstantinopleFix` is the EEST label for Petersburg. The runner fails
+if any of the 12 expected labels is empty, if an unexpected label appears, if
+the semantic case-set digest changes, or if any test case fails.
 
-and
-
-`applicable = passed + failed + errored`.
-
-A DTVM limitation is a failure, not an exclusion. An exclusion is permitted
-only when the fixture requires behavior outside the documented EVMC VM
-boundary; every exclusion records its fixture identifier and reason.
-
-Run the identical applicable case set in interpreter and multipass modes. A
-mode-specific pass list is invalid evidence. Persist a machine-readable
-manifest containing release, asset digest, DTVM commit, mode, revision, case
-identifiers, result classification, and aggregate counts.
+Run the identical complete case set in interpreter and multipass modes. A
+mode-specific pass list is invalid evidence. Persist machine-readable
+manifests containing the release and archive digest, semantic case-set digest,
+per-revision case counts and digests, DTVM commit, execution mode, and aggregate
+passed, failed, errored, and excluded counts.
 
 ### CI
 
-Replace the Cancun-only, mutable-fixture state-test job with pinned acquisition
-and an explicit Frontier-Osaka revision matrix. Preserve existing interpreter,
-multipass release/debug, gas-register, evmone unit, fallback, and performance
-regression jobs. CI may cache the archive by its digest but must verify the
-digest on every restoration.
+Replace the misleading name-filtered, mutable-fixture state-test job with
+pinned acquisition and two unfiltered full-corpus runs, one per DTVM execution
+mode. Preserve existing interpreter, multipass release/debug, gas-register,
+evmone unit, fallback, and performance regression jobs. CI may cache the
+archive by its digest but must verify the digest on every restoration.
 
 ## Implementation Plan
 
@@ -187,23 +187,52 @@ digest on every restoration.
 
 ### Phase 2: Prague and Osaka behavior
 
-- [ ] Run the pinned fixture corpus in interpreter mode and classify the first
-  failing semantic boundaries without suppressing cases.
-- [ ] Add one focused failing regression per missing rule and implement the
-  minimal fix.
-- [ ] Repeat the same case set in multipass mode and repair only genuine
-  revision-propagation or lowering differences.
+- [x] Run the pinned fixture corpus in interpreter mode without suppressing
+  cases; no additional VM semantic failure was exposed.
+- [x] Confirm existing Prague and Osaka opcode, gas, transaction-admission, and
+  precompile-boundary cases pass the official oracle.
+- [x] Repeat the identical case set in multipass mode; no mode-specific
+  revision-propagation or lowering difference was exposed.
 
 ### Phase 3: Reproducible evidence and CI
 
-- [ ] Pin the fixture URL and SHA-256 in the runner and workflow.
-- [ ] Add fail-closed result accounting and a machine-readable manifest.
-- [ ] Run the complete Frontier-Osaka matrix in both modes and record exact
+- [x] Pin the fixture URL, archive SHA-256, and semantic case-set SHA-256 in the
+  runner and workflow.
+- [x] Add fail-closed corpus validation and machine-readable manifests.
+- [x] Run the complete applicable EEST corpus in both modes and record exact
   per-revision counts.
 - [ ] Run all existing DTVM EVM CI-equivalent build, format, unit, fallback,
   differential, and performance-regression gates.
 - [ ] Update module specifications, the PR title/body, and the release note to
   match the verified behavior and evidence.
+
+### Acceptance Evidence
+
+The pinned corpus contains 2,723 JSON files and 63,556 cases. Its semantic
+case-set SHA-256 is
+`461395b7f284c4c262d4c09fa17aab73c3816af7caaeecac4d1a3bcf3009961c`.
+
+| EEST revision label | Cases |
+| --- | ---: |
+| Frontier | 363 |
+| Homestead | 373 |
+| Byzantium | 454 |
+| ConstantinopleFix (Petersburg) | 463 |
+| Istanbul | 608 |
+| Berlin | 1,249 |
+| London | 1,504 |
+| Paris | 1,564 |
+| Shanghai | 1,745 |
+| Cancun | 16,847 |
+| Prague | 18,869 |
+| Osaka | 19,517 |
+
+Both acceptance runs loaded the same 63,556-case corpus:
+
+| DTVM mode | Passed | Failed | Errored | Excluded |
+| --- | ---: | ---: | ---: | ---: |
+| interpreter | 63,556 | 0 | 0 | 0 |
+| multipass with profile-guided JIT | 63,556 | 0 | 0 | 0 |
 
 ### Commit Strategy
 
@@ -218,8 +247,9 @@ proves its behavior. There is no fixed maximum commit count for PR #600.
 The implementation is complete only when all conditions hold:
 
 1. The pinned archive digest matches the value above.
-2. Every mainnet revision from Frontier through Osaka discovers applicable
-   fixture cases in both interpreter and multipass modes.
+2. All 15 EVMC mainnet revisions from Frontier through Osaka are recognized
+   explicitly, and every one of the 12 revision labels present in EEST v5.4.0
+   has a non-empty case set.
 3. Every applicable case passes in both modes: zero failures and zero errors.
 4. There are zero unexplained skips; every out-of-scope fixture is listed with
    a boundary-based reason and excluded before the applicable denominator.
